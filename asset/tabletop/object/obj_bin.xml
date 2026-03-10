@@ -1,0 +1,17 @@
+<mujocoinclude>
+
+    <worldbody>
+        <body name="body_obj_bin" pos="0 0 0">
+            <joint type="free" />
+
+            <geom type="box" size="0.06 0.06 0.006" pos="0 0 0.006" rgba="0.2 0.2 0.25 1" />
+            <geom type="box" size="0.006 0.06 0.035" pos="0.054 0 0.041" rgba="0.2 0.2 0.25 1" />
+            <geom type="box" size="0.006 0.06 0.035" pos="-0.054 0 0.041" rgba="0.2 0.2 0.25 1" />
+            <geom type="box" size="0.06 0.006 0.035" pos="0 0.054 0.041" rgba="0.2 0.2 0.25 1" />
+            <geom type="box" size="0.06 0.006 0.035" pos="0 -0.054 0.041" rgba="0.2 0.2 0.25 1" />
+
+            <inertial pos="0 0 0.03" mass="0.5" diaginertia="0.002 0.002 0.002" />
+        </body>
+    </worldbody>
+
+</mujocoinclude>

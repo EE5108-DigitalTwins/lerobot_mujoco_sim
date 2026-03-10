@@ -1,0 +1,29 @@
+services:
+  lerobot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lerobot-mujoco-tutorial:latest
+    container_name: lerobot-mujoco
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+      - MUJOCO_GL= osmesa #${MUJOCO_GL:-egl}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-all}
+    ports:
+      - "8888:8888"
+    shm_size: "8gb"
+    stdin_open: true
+    tty: true
+    command: bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
