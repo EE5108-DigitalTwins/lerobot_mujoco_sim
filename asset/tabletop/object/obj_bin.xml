@@ -1,8 +1,8 @@
 <mujocoinclude>
 
     <worldbody>
-        <body name="body_obj_bin" pos="0 0 0">
-            <joint type="free" />
+        <body name="body_obj_bin" pos="0.30 0.20 0.80">
+            <!-- No free joint: bin is fixed in place every episode. -->
 
             <geom type="box" size="0.06 0.06 0.006" pos="0 0 0.006" rgba="0.2 0.2 0.25 1" />
             <geom type="box" size="0.006 0.06 0.035" pos="0.054 0 0.041" rgba="0.2 0.2 0.25 1" />

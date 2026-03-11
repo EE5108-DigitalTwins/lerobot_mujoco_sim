@@ -66,6 +66,11 @@ class SimpleEnv:
             self.tcp_body_name = 'tcp_link'
             self.gripper_joint_name = 'rh_r1'
             self.gripper_actuator_scales = np.array([1.0, 0.8, 1.0, 0.8], dtype=np.float32)
+            self.gripper_max_rad = 1.0   # preserve existing OMY behaviour
+            self.gripper_continuous = False
+            # After placing, the OMY arm must be retracted above this Z (metres) to
+            # signal episode success; prevents false positives during the pick phase.
+            self.success_height_threshold = 0.9
         elif robot_profile in ['so100', 'so101']:
             self.joint_names = [
                 'shoulder_pan',
@@ -77,6 +82,13 @@ class SimpleEnv:
             self.tcp_body_name = 'gripper'
             self.gripper_joint_name = 'gripper'
             self.gripper_actuator_scales = np.array([1.0], dtype=np.float32)
+            # Gripper joint range: [-0.17453, 1.74533] rad.  Action is normalised
+            # to [0, 1] where 0 = fully open and 1 = fully closed.
+            self.gripper_max_rad = 1.74533
+            self.gripper_continuous = True
+            # SO100/SO101: the bin walls physically confirm placement, so no
+            # arm-retract requirement is needed.  Set to None to skip the check.
+            self.success_height_threshold = None
         else:
             raise ValueError(f"Unsupported robot_profile: {robot_profile}")
 
@@ -297,8 +309,10 @@ class SimpleEnv:
         except Exception:
             pass
 
-        # Set object positions
-        obj_names = self.env.get_body_names(prefix='body_obj_')
+        # Randomise pick-object positions.  The plate/target body is fixed in
+        # the scene XML (no free joint) and is never touched here.
+        all_obj_names = self.env.get_body_names(prefix='body_obj_')
+        obj_names = [n for n in all_obj_names if n != self.plate_body_name]
         n_obj = len(obj_names)
         x_range = self.spawn_x_range
         y_range = self.spawn_y_range
@@ -327,8 +341,8 @@ class SimpleEnv:
                 xy_margin=xy_margin,
             )
         for obj_idx in range(n_obj):
-            self.env.set_p_base_body(body_name=obj_names[obj_idx],p=obj_xyzs[obj_idx,:])
-            self.env.set_R_base_body(body_name=obj_names[obj_idx],R=np.eye(3,3))
+            self.env.set_p_base_body(body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :])
+            self.env.set_R_base_body(body_name=obj_names[obj_idx], R=np.eye(3, 3))
 
         # Clear residual dynamics so newly spawned objects start at rest
         self.env.data.qvel[:] = 0.0
@@ -353,7 +367,8 @@ class SimpleEnv:
         for _ in range(100):
             self.step_env()
         print("DONE INITIALIZATION")
-        self.gripper_state = False
+        # gripper_state is a float in [0, 1]: 0 = fully open, 1 = fully closed.
+        self.gripper_state = 0.0
         self.past_chars = []
 
     def step(self, action):
@@ -408,7 +423,12 @@ class SimpleEnv:
         self.prev_q = prev_q
         self.last_q = copy.deepcopy(q)
         
-        gripper_cmd = np.array([action[-1]] * self.n_gripper_actuators, dtype=np.float32)
+        # Scale normalised gripper action [0, 1] → position setpoint in radians,
+        # then apply per-actuator scales (e.g. symmetric jaw coupling).
+        gripper_cmd = np.array(
+            [np.clip(float(action[-1]), 0.0, 1.0) * self.gripper_max_rad] * self.n_gripper_actuators,
+            dtype=np.float32,
+        )
         gripper_cmd *= self.gripper_actuator_scales
         self.compute_q = q
         q = np.concatenate([q, gripper_cmd])
@@ -473,13 +493,16 @@ class SimpleEnv:
         '''
         Get the joint state of the robot
         returns:
-            q: np.array, joint angles of the robot + gripper state (0 for open, 1 for closed)
-            [j1,j2,j3,j4,j5,j6,gripper]
+            q: np.array, joint angles of the robot + normalised gripper position
+            [j1,j2,j3,j4,j5,j6,gripper]  where gripper ∈ [0,1] (0=open, 1=closed)
         '''
         qpos = self.env.get_qpos_joints(joint_names=self.joint_names)
         gripper = self.env.get_qpos_joint(self.gripper_joint_name)
-        gripper_cmd = 1.0 if gripper[0] > 0.5 else 0.0
-        return np.concatenate([qpos, [gripper_cmd]],dtype=np.float32)
+        if self.gripper_continuous:
+            gripper_val = float(np.clip(gripper[0] / self.gripper_max_rad, 0.0, 1.0))
+        else:
+            gripper_val = 1.0 if gripper[0] > 0.5 else 0.0
+        return np.concatenate([qpos, [gripper_val]], dtype=np.float32)
     
     def teleop_robot(self):
         '''
@@ -555,7 +578,11 @@ class SimpleEnv:
         if self._key_is_pressed_once(glfw.KEY_Z):
             return np.zeros(7, dtype=np.float32), True
         if self._key_is_pressed_once(glfw.KEY_SPACE):
-            self.gripper_state =  not  self.gripper_state
+            self.gripper_state = 0.0 if self.gripper_state > 0.5 else 1.0  # toggle open/close
+        if self._key_is_down(glfw.KEY_RIGHT_BRACKET):   # ] → close gradually
+            self.gripper_state = min(1.0, self.gripper_state + 0.05)
+        if self._key_is_down(glfw.KEY_LEFT_BRACKET):    # [ → open gradually
+            self.gripper_state = max(0.0, self.gripper_state - 0.05)
         drot = r2rpy(drot)
         action = np.concatenate([dpos, drot, np.array([self.gripper_state],dtype=np.float32)],dtype=np.float32)
         self._teleop_debug_counter += 1
@@ -621,7 +648,11 @@ class SimpleEnv:
             drot = rotation_matrix(angle=-0.03, direction=[1, 0, 0])[:3, :3]
 
         if self._key_is_pressed_once(glfw.KEY_SPACE):
-            self.gripper_state = not self.gripper_state
+            self.gripper_state = 0.0 if self.gripper_state > 0.5 else 1.0  # toggle open/close
+        if self._key_is_down(glfw.KEY_RIGHT_BRACKET):   # ] → close gradually
+            self.gripper_state = min(1.0, self.gripper_state + 0.05)
+        if self._key_is_down(glfw.KEY_LEFT_BRACKET):    # [ → open gradually
+            self.gripper_state = max(0.0, self.gripper_state - 0.05)
         if self._key_is_pressed_once(glfw.KEY_Z):
             return np.zeros(7, dtype=np.float32), True
 
@@ -731,41 +762,74 @@ class SimpleEnv:
         if self._key_is_pressed_once(glfw.KEY_Z):
             return np.zeros(self.n_arm_joints + 1, dtype=np.float32), True
         if self._key_is_pressed_once(glfw.KEY_SPACE):
-            self.gripper_state = not self.gripper_state
-        
+            self.gripper_state = 0.0 if self.gripper_state > 0.5 else 1.0  # toggle open/close
+        if self._key_is_down(glfw.KEY_RIGHT_BRACKET):   # ] → close gradually
+            self.gripper_state = min(1.0, self.gripper_state + 0.05)
+        if self._key_is_down(glfw.KEY_LEFT_BRACKET):    # [ → open gradually
+            self.gripper_state = max(0.0, self.gripper_state - 0.05)
+
         # Combine joint deltas with gripper state
         action = np.concatenate([dq, np.array([self.gripper_state], dtype=np.float32)])
         self._teleop_debug_counter += 1
         if np.linalg.norm(dq) > 1e-8 or self._teleop_debug_counter % 200 == 0:
             focused, active_keys = self._teleop_debug_status()
-            print(f"[teleop-debug] focused={focused} keys={active_keys} dq={np.round(dq, 4)} gripper={self.gripper_state}")
+            print(f"[teleop-debug] focused={focused} keys={active_keys} dq={np.round(dq, 4)} gripper={self.gripper_state:.2f}")
         return action, False
     
     def get_delta_q(self):
         '''
         Get the delta joint angles of the robot
         returns:
-            delta: np.array, delta joint angles of the robot + gripper state (0 for open, 1 for closed)
-            [dj1,dj2,dj3,dj4,dj5,dj6,gripper]
+            delta: np.array, delta joint angles of the robot + normalised gripper position
+            [dj1,dj2,dj3,dj4,dj5,dj6,gripper]  where gripper ∈ [0,1] (0=open, 1=closed)
         '''
         delta = self.compute_q - self.prev_q
         gripper = self.env.get_qpos_joint(self.gripper_joint_name)
-        gripper_cmd = 1.0 if gripper[0] > 0.5 else 0.0
-        return np.concatenate([delta, [gripper_cmd]],dtype=np.float32)
+        if self.gripper_continuous:
+            gripper_val = float(np.clip(gripper[0] / self.gripper_max_rad, 0.0, 1.0))
+        else:
+            gripper_val = 1.0 if gripper[0] > 0.5 else 0.0
+        return np.concatenate([delta, [gripper_val]], dtype=np.float32)
 
     def check_success(self):
         '''
-        ['body_obj_mug_5', 'body_obj_plate_11']
-        Check if the mug is placed on the plate
-        + Gripper should be open and move upward above 0.9
+        Check if the object has been placed in/on the target.
+
+        SO100/SO101 (bin task):
+            The episode ends the moment the block lands on the bin floor.
+            Conditions:
+              1. Block XY is within the bin interior (< 5 cm from bin centre).
+              2. Block Z is below the bin wall tops — i.e. it is physically
+                 inside the bin, not being held above it.
+                 Wall tops ≈ bin_z + 0.076 m.
+            No gripper check: the block can only satisfy condition 2 once it
+            has been released and fallen, so false positives during the pick
+            phase are impossible.
+
+        OMY (plate task):
+            1. Object XY within 10 cm of plate centre.
+            2. Object Z within 60 cm of plate Z.
+            3. Gripper open (raw joint < 0.1 rad).
+            4. TCP Z > success_height_threshold (arm retracted upward).
         '''
-        p_mug = self.env.get_p_body(self.mug_body_name)
-        p_plate = self.env.get_p_body(self.plate_body_name)
-        if np.linalg.norm(p_mug[:2] - p_plate[:2]) < 0.1 and np.linalg.norm(p_mug[2] - p_plate[2]) < 0.6 and self.env.get_qpos_joint(self.gripper_joint_name) < 0.1:
-            p = self.env.get_p_body(self.tcp_body_name)[2]
-            if p > 0.9:
-                return True
-        return False
+        p_obj = self.env.get_p_body(self.mug_body_name)
+        p_tgt = self.env.get_p_body(self.plate_body_name)
+
+        if self.success_height_threshold is None:
+            # SO100/SO101: block must be inside the bin and below the wall tops.
+            xy_ok   = np.linalg.norm(p_obj[:2] - p_tgt[:2]) < 0.05
+            # wall top = bin_body_z + 0.076; use a small margin below that
+            in_bin  = p_obj[2] < (p_tgt[2] + 0.07)
+            return bool(xy_ok and in_bin)
+        else:
+            # OMY: original plate-placement logic.
+            xy_ok        = np.linalg.norm(p_obj[:2] - p_tgt[:2]) < 0.1
+            z_ok         = np.linalg.norm(p_obj[2]  - p_tgt[2])  < 0.6
+            gripper_open = self.env.get_qpos_joint(self.gripper_joint_name)[0] < 0.1
+            if not (xy_ok and z_ok and gripper_open):
+                return False
+            tcp_z = self.env.get_p_body(self.tcp_body_name)[2]
+            return tcp_z > self.success_height_threshold
     
     def get_obj_pose(self):
         '''
