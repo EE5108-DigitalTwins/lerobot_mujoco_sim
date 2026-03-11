@@ -43,8 +43,59 @@ class SimpleEnv2:
                     'joint4',
                     'joint5',
                     'joint6',]
+        self._prev_key_state = {}
         self.init_viewer()
         self.reset(seed)
+
+    def _key_is_down(self, key):
+        if self.env.is_key_pressed_repeat(key=key):
+            return True
+
+        viewer = getattr(self.env, 'viewer', None)
+        window = getattr(viewer, 'window', None)
+        if window is None:
+            return False
+
+        try:
+            return glfw.get_key(window, key) == glfw.PRESS
+        except Exception:
+            return False
+
+    def _key_is_pressed_once(self, key):
+        is_down = self._key_is_down(key)
+        was_down = self._prev_key_state.get(key, False)
+        self._prev_key_state[key] = is_down
+        return is_down and not was_down
+
+    def _teleop_debug_status(self):
+        key_map = {
+            'W': glfw.KEY_W,
+            'A': glfw.KEY_A,
+            'S': glfw.KEY_S,
+            'D': glfw.KEY_D,
+            'R': glfw.KEY_R,
+            'F': glfw.KEY_F,
+            'Q': glfw.KEY_Q,
+            'E': glfw.KEY_E,
+            'LEFT': glfw.KEY_LEFT,
+            'RIGHT': glfw.KEY_RIGHT,
+            'UP': glfw.KEY_UP,
+            'DOWN': glfw.KEY_DOWN,
+            'SPACE': glfw.KEY_SPACE,
+            'Z': glfw.KEY_Z,
+        }
+        active_keys = [name for name, key in key_map.items() if self._key_is_down(key)]
+
+        viewer = getattr(self.env, 'viewer', None)
+        window = getattr(viewer, 'window', None)
+        focused = False
+        if window is not None:
+            try:
+                focused = bool(glfw.get_window_attrib(window, glfw.FOCUSED))
+            except Exception:
+                focused = False
+
+        return focused, active_keys
 
     def init_viewer(self):
         '''
@@ -230,6 +281,9 @@ class SimpleEnv2:
             self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
             self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
             self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
+            focused, active_keys = self._teleop_debug_status()
+            self.env.viewer_text_overlay(text1='Window Focus', text2='YES' if focused else 'NO (click viewer)')
+            self.env.viewer_text_overlay(text1='Active Keys (raw)', text2='%s' % active_keys)
         if getattr(self, 'instruction', None) is not None:
             language_instructions = self.instruction
             self.env.viewer_text_overlay(text1='Language Instructions',text2=language_instructions)
@@ -287,33 +341,33 @@ class SimpleEnv2:
         # char = self.env.get_key_pressed()
         dpos = np.zeros(3)
         drot = np.eye(3)
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_S):
+        if self._key_is_down(glfw.KEY_S):
             dpos += np.array([0.007,0.0,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_W):
+        if self._key_is_down(glfw.KEY_W):
             dpos += np.array([-0.007,0.0,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_A):
+        if self._key_is_down(glfw.KEY_A):
             dpos += np.array([0.0,-0.007,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_D):
+        if self._key_is_down(glfw.KEY_D):
             dpos += np.array([0.0,0.007,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_R):
+        if self._key_is_down(glfw.KEY_R):
             dpos += np.array([0.0,0.0,0.007])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_F):
+        if self._key_is_down(glfw.KEY_F):
             dpos += np.array([0.0,0.0,-0.007])
-        if  self.env.is_key_pressed_repeat(key=glfw.KEY_LEFT):
+        if  self._key_is_down(glfw.KEY_LEFT):
             drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
-        if  self.env.is_key_pressed_repeat(key=glfw.KEY_RIGHT):
+        if  self._key_is_down(glfw.KEY_RIGHT):
             drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_DOWN):
+        if self._key_is_down(glfw.KEY_DOWN):
             drot = rotation_matrix(angle=0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_UP):
+        if self._key_is_down(glfw.KEY_UP):
             drot = rotation_matrix(angle=-0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_Q):
+        if self._key_is_down(glfw.KEY_Q):
             drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_E):
+        if self._key_is_down(glfw.KEY_E):
             drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]
-        if self.env.is_key_pressed_once(key=glfw.KEY_Z):
+        if self._key_is_pressed_once(glfw.KEY_Z):
             return np.zeros(7, dtype=np.float32), True
-        if self.env.is_key_pressed_once(key=glfw.KEY_SPACE):
+        if self._key_is_pressed_once(glfw.KEY_SPACE):
             self.gripper_state =  not  self.gripper_state
         drot = r2rpy(drot)
         action = np.concatenate([dpos, drot, np.array([self.gripper_state],dtype=np.float32)],dtype=np.float32)

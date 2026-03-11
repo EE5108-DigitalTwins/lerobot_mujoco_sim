@@ -81,6 +81,10 @@ class SimpleEnv:
 
         self.n_arm_joints = len(self.joint_names)
         self.n_gripper_actuators = len(self.gripper_actuator_scales)
+        self._prev_key_state = {}
+        self._teleop_debug_counter = 0
+        self.joint_mins = np.array([self.env.model.joint(name).range[0] for name in self.joint_names], dtype=np.float32)
+        self.joint_maxs = np.array([self.env.model.joint(name).range[1] for name in self.joint_names], dtype=np.float32)
 
         available_joint_names = set(self.env.joint_names)
         missing_joints = [jname for jname in self.joint_names if jname not in available_joint_names]
@@ -93,6 +97,56 @@ class SimpleEnv:
 
         self.init_viewer()
         self.reset(seed)
+
+    def _key_is_down(self, key):
+        if self.env.is_key_pressed_repeat(key=key):
+            return True
+
+        viewer = getattr(self.env, 'viewer', None)
+        window = getattr(viewer, 'window', None)
+        if window is None:
+            return False
+
+        try:
+            return glfw.get_key(window, key) == glfw.PRESS
+        except Exception:
+            return False
+
+    def _key_is_pressed_once(self, key):
+        is_down = self._key_is_down(key)
+        was_down = self._prev_key_state.get(key, False)
+        self._prev_key_state[key] = is_down
+        return is_down and not was_down
+
+    def _teleop_debug_status(self):
+        key_map = {
+            'W': glfw.KEY_W,
+            'A': glfw.KEY_A,
+            'S': glfw.KEY_S,
+            'D': glfw.KEY_D,
+            'R': glfw.KEY_R,
+            'F': glfw.KEY_F,
+            'Q': glfw.KEY_Q,
+            'E': glfw.KEY_E,
+            'LEFT': glfw.KEY_LEFT,
+            'RIGHT': glfw.KEY_RIGHT,
+            'UP': glfw.KEY_UP,
+            'DOWN': glfw.KEY_DOWN,
+            'SPACE': glfw.KEY_SPACE,
+            'Z': glfw.KEY_Z,
+        }
+        active_keys = [name for name, key in key_map.items() if self._key_is_down(key)]
+
+        viewer = getattr(self.env, 'viewer', None)
+        window = getattr(viewer, 'window', None)
+        focused = False
+        if window is not None:
+            try:
+                focused = bool(glfw.get_window_attrib(window, glfw.FOCUSED))
+            except Exception:
+                focused = False
+
+        return focused, active_keys
 
     def init_viewer(self):
         '''
@@ -114,16 +168,33 @@ class SimpleEnv:
         '''
         if seed is not None:
             np.random.seed(seed=seed)
-        q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
-        q_zero,ik_err_stack,ik_info = solve_ik(
-            env = self.env,
-            joint_names_for_ik = self.joint_names,
-            body_name_trgt     = self.tcp_body_name,
-            q_init       = q_init, # ik from zero pose
-            p_trgt       = np.array([0.3,0.0,1.0]),
-            R_trgt       = rpy2r(np.deg2rad([90,-0.,90 ])),
-        )
-        self.env.forward(q=q_zero,joint_names=self.joint_names,increase_tick=False)
+        
+        # Set robot-specific initial configurations and home positions
+        # SO101 uses joint control, skip IK and use direct joint positions
+        if self.robot_profile == 'so101' and self.action_type == 'delta_joint_angle':
+            # Direct joint configuration for SCARA-like robot
+            q_zero = np.array([0.0, 0.8, -0.8, 0.0, 0.0], dtype=np.float32)
+            self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
+        else:
+            # Use IK for Cartesian-controlled robots
+            if self.robot_profile == 'so100':
+                q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
+                p_trgt = np.array([0.25, -0.35, 0.95])
+                R_trgt = rpy2r(np.deg2rad([90, 0, 90]))
+            else:  # omy
+                q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
+                p_trgt = np.array([0.3, 0.0, 1.0])
+                R_trgt = rpy2r(np.deg2rad([90, 0, 90]))
+                
+            q_zero,ik_err_stack,ik_info = solve_ik(
+                env = self.env,
+                joint_names_for_ik = self.joint_names,
+                body_name_trgt     = self.tcp_body_name,
+                q_init       = q_init,
+                p_trgt       = p_trgt,
+                R_trgt       = R_trgt,
+            )
+            self.env.forward(q=q_zero,joint_names=self.joint_names,increase_tick=False)
 
         # Set object positions
         obj_names = self.env.get_body_names(prefix='body_obj_')
@@ -173,6 +244,7 @@ class SimpleEnv:
 
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
+        self.prev_q = copy.deepcopy(q_zero)
         self.q = np.concatenate([q_zero, np.zeros(self.n_gripper_actuators, dtype=np.float32)])
         self.p0, self.R0 = self.env.get_pR_body(body_name=self.tcp_body_name)
         mug_init_pose, plate_init_pose = self.get_obj_pose()
@@ -194,10 +266,23 @@ class SimpleEnv:
                 - joint_angle: [j1,j2,j3,j4,j5,j6]
 
         '''
+        prev_q = copy.deepcopy(self.last_q)
         if self.action_type == 'eef_pose':
             q = self.env.get_qpos_joints(joint_names=self.joint_names)
             self.p0 += action[:3]
             self.R0 = self.R0.dot(rpy2r(action[3:6]))
+            
+            # Adjust IK parameters based on robot profile
+            if self.robot_profile == 'so100':
+                # SO100 needs moderate damping
+                ik_stepsize = 0.3
+                ik_eps = 0.5
+                max_ik_tick = 50
+            else:  # omy
+                ik_stepsize = 1.0
+                ik_eps = 1e-2
+                max_ik_tick = 50
+            
             q ,ik_err_stack,ik_info = solve_ik(
                 env                = self.env,
                 joint_names_for_ik = self.joint_names,
@@ -205,19 +290,23 @@ class SimpleEnv:
                 q_init             = q,
                 p_trgt             = self.p0,
                 R_trgt             = self.R0,
-                max_ik_tick        = 50,
-                ik_stepsize        = 1.0,
-                ik_eps             = 1e-2,
+                max_ik_tick        = max_ik_tick,
+                ik_stepsize        = ik_stepsize,
+                ik_eps             = ik_eps,
                 ik_th              = np.radians(5.0),
                 render             = False,
                 verbose_warning    = False,
             )
         elif self.action_type == 'delta_joint_angle':
-            q = action[:self.n_arm_joints] + self.last_q
+            q = action[:self.n_arm_joints] + prev_q
         elif self.action_type == 'joint_angle':
             q = action[:self.n_arm_joints]
         else:
             raise ValueError('action_type not recognized')
+
+        q = np.clip(q, self.joint_mins, self.joint_maxs)
+        self.prev_q = prev_q
+        self.last_q = copy.deepcopy(q)
         
         gripper_cmd = np.array([action[-1]] * self.n_gripper_actuators, dtype=np.float32)
         gripper_cmd *= self.gripper_actuator_scales
@@ -275,6 +364,9 @@ class SimpleEnv:
             self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
             self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
             self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
+            focused, active_keys = self._teleop_debug_status()
+            self.env.viewer_text_overlay(text1='Window Focus', text2='YES' if focused else 'NO (click viewer)')
+            self.env.viewer_text_overlay(text1='Active Keys (raw)', text2='%s' % active_keys)
         self.env.render()
 
     def get_joint_state(self):
@@ -297,27 +389,21 @@ class SimpleEnv:
             done: bool, True if the user wants to reset the teleoperation
         
         Keys:
-            ---------     -----------------------
-               w       ->        backward
-            s  a  d        left   forward   right
-            ---------      -----------------------
-            In x, y plane
+            Movement:
+            W: Forward
+            S: Backward
+            A: Left
+            D: Right
+            R: Up
+            F: Down
 
-            ---------
-            R: Moving Up
-            F: Moving Down
-            ---------
-            In z axis
-
-            ---------
-            Q: Tilt left
-            E: Tilt right
-            UP: Look Upward
-            Down: Look Donward
-            Right: Turn right
-            Left: Turn left
-            ---------
-            For rotation
+            Rotation:
+            Q: Yaw left
+            E: Yaw right
+            UP: Pitch up
+            DOWN: Pitch down
+            LEFT: Roll left
+            RIGHT: Roll right
 
             ---------
             z: reset
@@ -326,39 +412,108 @@ class SimpleEnv:
 
 
         '''
-        # char = self.env.get_key_pressed()
+        # For SCARA-like robots (SO101), use joint-space control
+        if self.action_type == 'delta_joint_angle':
+            return self._teleop_joint_space()
+        
+        # Standard Cartesian control for other robots
         dpos = np.zeros(3)
         drot = np.eye(3)
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_S):
-            dpos += np.array([0.007,0.0,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_W):
-            dpos += np.array([-0.007,0.0,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_A):
-            dpos += np.array([0.0,-0.007,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_D):
-            dpos += np.array([0.0,0.007,0.0])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_R):
-            dpos += np.array([0.0,0.0,0.007])
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_F):
-            dpos += np.array([0.0,0.0,-0.007])
-        if  self.env.is_key_pressed_repeat(key=glfw.KEY_LEFT):
-            drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
-        if  self.env.is_key_pressed_repeat(key=glfw.KEY_RIGHT):
-            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_DOWN):
-            drot = rotation_matrix(angle=0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_UP):
-            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_Q):
-            drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]
-        if self.env.is_key_pressed_repeat(key=glfw.KEY_E):
-            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]
-        if self.env.is_key_pressed_once(key=glfw.KEY_Z):
+        
+        # Collect all WASD and RF inputs
+        # These deltas are in world frame, which is what the IK solver expects
+        # WASD: Horizontal plane movement (X-Y)
+        # R/F: Vertical movement (Z)
+        # Q/E: Yaw rotation
+        # Arrow keys: Pitch/Roll rotation
+        if self._key_is_down(glfw.KEY_W):
+            dpos += np.array([0.007,0.0,0.0])  # Forward (+X)
+        if self._key_is_down(glfw.KEY_S):
+            dpos += np.array([-0.007,0.0,0.0])  # Backward (-X)
+        if self._key_is_down(glfw.KEY_A):
+            dpos += np.array([0.0,-0.007,0.0])  # Left (-Y)
+        if self._key_is_down(glfw.KEY_D):
+            dpos += np.array([0.0,0.007,0.0])  # Right (+Y)
+        if self._key_is_down(glfw.KEY_R):
+            dpos += np.array([0.0,0.0,0.007])  # Up (+Z)
+        if self._key_is_down(glfw.KEY_F):
+            dpos += np.array([0.0,0.0,-0.007])  # Down (-Z)
+        if self._key_is_down(glfw.KEY_Q):
+            drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]  # Yaw left
+        if self._key_is_down(glfw.KEY_E):
+            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]  # Yaw right
+        if  self._key_is_down(glfw.KEY_LEFT):
+            drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]  # Roll left
+        if  self._key_is_down(glfw.KEY_RIGHT):
+            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]  # Roll right
+        if self._key_is_down(glfw.KEY_UP):
+            drot = rotation_matrix(angle=0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]  # Pitch up
+        if self._key_is_down(glfw.KEY_DOWN):
+            drot = rotation_matrix(angle=-0.1 * 0.3, direction=[1.0, 0.0, 0.0])[:3, :3]  # Pitch down
+        if self._key_is_pressed_once(glfw.KEY_Z):
             return np.zeros(7, dtype=np.float32), True
-        if self.env.is_key_pressed_once(key=glfw.KEY_SPACE):
+        if self._key_is_pressed_once(glfw.KEY_SPACE):
             self.gripper_state =  not  self.gripper_state
         drot = r2rpy(drot)
         action = np.concatenate([dpos, drot, np.array([self.gripper_state],dtype=np.float32)],dtype=np.float32)
+        self._teleop_debug_counter += 1
+        if np.linalg.norm(action[:6]) > 1e-8 or self._teleop_debug_counter % 200 == 0:
+            focused, active_keys = self._teleop_debug_status()
+            print(f"[teleop-debug] focused={focused} keys={active_keys} action={np.round(action, 4)}")
+        return action, False
+    
+    def _teleop_joint_space(self):
+        '''
+        Joint-space teleoperation for SCARA-like robots (SO101)
+        Maps WASD/RF to joint velocities directly
+        '''
+        dq = np.zeros(self.n_arm_joints, dtype=np.float32)
+        joint_vel = 0.03  # Joint velocity magnitude
+        
+        # W/S: shoulder lift
+        if self._key_is_down(glfw.KEY_W):
+            dq[1] += joint_vel  # Shoulder lift up
+        if self._key_is_down(glfw.KEY_S):
+            dq[1] -= joint_vel  # Shoulder lift down
+
+        # A/D: left-right (shoulder pan)
+        if self._key_is_down(glfw.KEY_A):
+            dq[0] -= joint_vel  # Shoulder pan left
+        if self._key_is_down(glfw.KEY_D):
+            dq[0] += joint_vel  # Shoulder pan right
+
+        # UP/DOWN: up-down (wrist flex)
+        if self._key_is_down(glfw.KEY_UP):
+            dq[3] += joint_vel  # Wrist flex up
+        if self._key_is_down(glfw.KEY_DOWN):
+            dq[3] -= joint_vel  # Wrist flex down
+        
+        # RF: Control elbow
+        if self._key_is_down(glfw.KEY_R):
+            dq[2] += joint_vel  # Elbow flex up
+        if self._key_is_down(glfw.KEY_F):
+            dq[2] -= joint_vel  # Elbow flex down
+        
+        # LEFT/RIGHT: Control wrist roll
+        if self._key_is_down(glfw.KEY_LEFT):
+            dq[4] += joint_vel  # Wrist roll
+        if self._key_is_down(glfw.KEY_RIGHT):
+            dq[4] -= joint_vel  # Wrist roll
+        
+        # UP/DOWN reserved for future use or finer control
+        
+        # Reset and gripper
+        if self._key_is_pressed_once(glfw.KEY_Z):
+            return np.zeros(self.n_arm_joints + 1, dtype=np.float32), True
+        if self._key_is_pressed_once(glfw.KEY_SPACE):
+            self.gripper_state = not self.gripper_state
+        
+        # Combine joint deltas with gripper state
+        action = np.concatenate([dq, np.array([self.gripper_state], dtype=np.float32)])
+        self._teleop_debug_counter += 1
+        if np.linalg.norm(dq) > 1e-8 or self._teleop_debug_counter % 200 == 0:
+            focused, active_keys = self._teleop_debug_status()
+            print(f"[teleop-debug] focused={focused} keys={active_keys} dq={np.round(dq, 4)} gripper={self.gripper_state}")
         return action, False
     
     def get_delta_q(self):
@@ -368,8 +523,7 @@ class SimpleEnv:
             delta: np.array, delta joint angles of the robot + gripper state (0 for open, 1 for closed)
             [dj1,dj2,dj3,dj4,dj5,dj6,gripper]
         '''
-        delta = self.compute_q - self.last_q
-        self.last_q = copy.deepcopy(self.compute_q)
+        delta = self.compute_q - self.prev_q
         gripper = self.env.get_qpos_joint(self.gripper_joint_name)
         gripper_cmd = 1.0 if gripper[0] > 0.5 else 0.0
         return np.concatenate([delta, [gripper_cmd]],dtype=np.float32)

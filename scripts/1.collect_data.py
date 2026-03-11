@@ -5,7 +5,7 @@
 # Collect demonstration data for the given environment.
 # The task is to pick an object and place in a designated location. The environment recognizes the success if the object is in the designated location, the gripper is opened, and the end-effector is positioned above the object.
 
-# Use WASD for the xy plane, RF for the z-axis, QE for tilt, and ARROWs for the rest of the rotations. 
+# Use WASD for x/y movement, RF for z movement, QE for yaw, LEFT/RIGHT for roll, and UP/DOWN for pitch.
 # SPACEBAR will change your gripper's state, and Z key will reset your environment with discarding the current episode data.
 
 # For overlayed images, 
@@ -64,7 +64,11 @@ class CollectConfig:
 
 def parse_args():
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
-    bootstrap_parser.add_argument("--config", default="collect_data.yaml", help="Path to YAML config file.")
+    bootstrap_parser.add_argument(
+        "--config",
+        default=str(PROJECT_ROOT / "configs" / "collect_data.yaml"),
+        help="Path to YAML config file.",
+    )
     bootstrap_args, _ = bootstrap_parser.parse_known_args()
 
     default_cfg = CollectConfig()
@@ -76,6 +80,9 @@ def parse_args():
         if unknown_keys:
             raise ValueError(f"Unknown keys in config file {bootstrap_args.config}: {unknown_keys}")
         merged_defaults.update(yaml_cfg)
+        print(f"[collect_data] Loaded config: {bootstrap_args.config}")
+    else:
+        print(f"[collect_data] Config not found: {bootstrap_args.config}. Using built-in defaults.")
 
     parser = argparse.ArgumentParser(
         description="Collect teleoperation demonstrations.",
@@ -109,7 +116,7 @@ def parse_args():
     parser.add_argument("--spawn-fallback-min-dist", type=float, default=merged_defaults["spawn_fallback_min_dist"], help="Fallback min distance if initial sampling fails.")
 
     args = parser.parse_args()
-    return CollectConfig(
+    config = CollectConfig(
         seed=args.seed,
         repo_name=args.repo_name,
         num_demo=args.num_demo,
@@ -138,16 +145,34 @@ def parse_args():
         spawn_fallback_min_dist=args.spawn_fallback_min_dist,
     )
 
+    if not os.path.isabs(config.xml_path):
+        config.xml_path = str((PROJECT_ROOT / config.xml_path).resolve())
+
+    return config
+
 
 def resolve_robot_scene_defaults(config):
     default_omy_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_y.xml')
     so100_scene_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_so100_y.xml')
+    so101_scene_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_so101_y.xml')
     default_root = str(PROJECT_ROOT / 'data' / 'demo_data')
 
-    if config.env_robot_profile == 'so100' and config.xml_path == default_omy_xml:
+    xml_norm = os.path.normpath(config.xml_path)
+    default_omy_norm = os.path.normpath(default_omy_xml)
+    is_default_omy_xml = (
+        xml_norm == default_omy_norm
+        or xml_norm.endswith(os.path.normpath(os.path.join('asset', 'example_scene_y.xml')))
+    )
+
+    if config.env_robot_profile == 'so100' and is_default_omy_xml:
         config.xml_path = so100_scene_xml
-    elif config.env_robot_profile == 'so101' and config.xml_path == default_omy_xml:
-        config.xml_path = str(PROJECT_ROOT / 'asset' / 'so_arm100' / 'SO101' / 'so101_new_calib.xml')
+    elif config.env_robot_profile == 'so101' and is_default_omy_xml:
+        config.xml_path = so101_scene_xml
+
+    if config.root in {'./demo_data', 'demo_data'}:
+        config.root = default_root
+    elif not os.path.isabs(config.root):
+        config.root = str((PROJECT_ROOT / config.root).resolve())
 
     if config.root == default_root and config.env_robot_profile == 'so100':
         config.root = str(PROJECT_ROOT / 'data' / 'demo_data_so100')
@@ -192,8 +217,12 @@ def validate_config(config):
 
 
 def build_env(config):
+    # SO101 is SCARA-like (vertical joints), use joint control instead of Cartesian IK
+    action_type = 'delta_joint_angle' if config.env_robot_profile == 'so101' else 'eef_pose'
+    
     return SimpleEnv(
         config.xml_path,
+        action_type=action_type,
         robot_profile=config.env_robot_profile,
         seed=config.seed,
         state_type='joint_angle',
@@ -206,6 +235,13 @@ def build_env(config):
         spawn_xy_margin=config.spawn_xy_margin,
         spawn_fallback_min_dist=config.spawn_fallback_min_dist,
     )
+
+
+def print_controls(config):
+    if config.env_robot_profile == 'so101':
+        print("[controls] SO101 joint mode: A/D shoulder_pan (left/right), UP/DOWN wrist_flex (up/down), W/S shoulder_lift, R/F elbow, LEFT/RIGHT wrist_roll, SPACE gripper, Z reset")
+    else:
+        print("[controls] Cartesian mode: W/S +/-X, A/D +/-Y, R/F +/-Z, Q/E yaw, LEFT/RIGHT roll, UP/DOWN pitch, SPACE gripper, Z reset")
 
 
 def create_or_load_dataset(config):
@@ -350,6 +386,7 @@ def main():
     config = resolve_robot_scene_defaults(config)
     validate_config(config)
     print(f"[collect_data] env_robot_profile={config.env_robot_profile}, xml_path={config.xml_path}")
+    print_controls(config)
     env = build_env(config)
     dataset = create_or_load_dataset(config)
 

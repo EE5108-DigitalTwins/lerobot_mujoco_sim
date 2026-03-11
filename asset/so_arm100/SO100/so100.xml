@@ -14,8 +14,9 @@
     <mesh name="Wrist_Pitch_Roll" file="assets/Wrist_Pitch_Roll.stl"/>
   </asset>
   <worldbody>
-    <geom type="mesh" rgba="0.1 0.1 0.1 1" mesh="Base"/>
-    <body name="shoulder" pos="0 -0.0452 0.0165" quat="0.707109 0.707105 0 0">
+    <body name="base" pos="0.00 -0.35 0.805" quat="0.707107 0 0 0.707107">
+      <geom type="mesh" rgba="0.1 0.1 0.1 1" mesh="Base"/>
+      <body name="shoulder" pos="0 -0.0452 0.0165" quat="0.707109 0.707105 0 0">
       <inertial pos="-9.07886e-05 0.0590972 0.031089" mass="0.119226" diaginertia="5.94278e-05 5.89975e-05 3.13712e-05"/>
       <joint name="shoulder_pan" pos="0 0 0" axis="0 1 0" range="-2 2" actuatorfrcrange="-35 35"/>
       <geom type="mesh" rgba="0.1 0.1 0.1 1" mesh="Rotation_Pitch"/>
@@ -34,6 +35,9 @@
             <body name="gripper" pos="0 -0.0601 0" quat="0.707109 0 0.707105 0">
               <inertial pos="0.00552377 -0.0280167 0.000483583" mass="0.0929859" diaginertia="5.03136e-05 4.64098e-05 2.72961e-05"/>
               <joint name="wrist_roll" pos="0 0 0" axis="0 1 0" range="-3.14158 3.14158" actuatorfrcrange="-35 35"/>
+              <body name="camera_center" pos="0.0 -0.03 0.08">
+                <camera name="egocentric" pos="0 0 0" xyaxes="-1 0 0 0 0 1" fovy="90"/>
+              </body>
               <body name="jaw" pos="-0.0202 -0.0244 0" quat="6.32679e-06 0 1 0">
                 <inertial pos="-0.00161745 -0.0303473 0.000449646" mass="0.0202444" diaginertia="1.11265e-05 8.99651e-06 2.99548e-06"/>
                 <joint name="gripper" pos="0 0 0" axis="0 0 1" range="-0.2 2" actuatorfrcrange="-35 35"/>
@@ -41,6 +45,7 @@
             </body>
           </body>
         </body>
+      </body>
       </body>
     </body>
   </worldbody>

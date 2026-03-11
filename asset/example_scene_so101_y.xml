@@ -1,4 +1,4 @@
-<mujoco model="Scanned Objects SO100">
+<mujoco model="Scanned Objects SO101">
     <size memory="500M"/>
 
     <option integrator="RK4" noslip_iterations="20" />
@@ -21,5 +21,5 @@
     <include file="./tabletop/object/obj_redbull.xml"/>
     <include file="./tabletop/object/obj_bin.xml"/>
 
-    <include file="./so_arm100/SO100/so100.xml" />
+    <include file="./so_arm100/SO101/so101_new_calib.xml" />
 </mujoco>

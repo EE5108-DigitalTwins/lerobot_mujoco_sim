@@ -450,8 +450,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - SO-ARM100 assets: Apache License 2.0
 - LeRobot framework: Apache License 2.0
 - Other third-party assets: See respective repositories
-
-
-### temp
-launch jupyter lab:
-jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root

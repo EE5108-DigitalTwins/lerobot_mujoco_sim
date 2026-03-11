@@ -233,6 +233,11 @@ class MuJoCoMinimalViewer(MinimalCallbacks):
             width, height, title, None, None)
         glfw.make_context_current(self.window)
         glfw.swap_interval(1)
+        glfw.set_input_mode(self.window, glfw.STICKY_KEYS, glfw.TRUE)
+        try:
+            glfw.focus_window(self.window)
+        except Exception:
+            pass
 
         framebuffer_width, framebuffer_height = glfw.get_framebuffer_size(
             self.window)
