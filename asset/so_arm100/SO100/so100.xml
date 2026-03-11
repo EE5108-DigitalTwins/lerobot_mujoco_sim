@@ -14,7 +14,7 @@
     <mesh name="Wrist_Pitch_Roll" file="assets/Wrist_Pitch_Roll.stl"/>
   </asset>
   <worldbody>
-    <body name="base" pos="0.00 -0.35 0.805" quat="0.707107 0 0 0.707107">
+    <body name="base" pos="0.00 -0.35 0.805" quat="0.707107 0 0 -0.707107">
       <geom type="mesh" rgba="0.1 0.1 0.1 1" mesh="Base"/>
       <body name="shoulder" pos="0 -0.0452 0.0165" quat="0.707109 0.707105 0 0">
       <inertial pos="-9.07886e-05 0.0590972 0.031089" mass="0.119226" diaginertia="5.94278e-05 5.89975e-05 3.13712e-05"/>

@@ -11,7 +11,10 @@
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
       <default class="collision">
-        <geom group="3"/>
+        <!-- High friction on all arm collision surfaces ensures blocks don't slip
+             out of the gripper jaw. Combined with block friction 0.8 via mean
+             combinemode: (3.0+0.8)/2 = 1.9 sliding friction at grasp contact. -->
+        <geom group="3" friction="3.0 0.1 0.01" condim="4" solref="0.004 1" solimp="0.95 0.99 0.001"/>
       </default>
     </default>
   </default>
@@ -107,8 +110,8 @@
                 <!-- Part wrist_roll_follower_so101_v1 -->
                 <geom type="mesh" class="visual" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material"/>
                 <geom type="mesh" class="collision" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material"/>
-                <body name="camera_center" pos="0.0 -0.03 0.08">
-                  <camera name="egocentric" pos="0 0 0" xyaxes="-1 0 0 0 0 1" fovy="90"/>
+                <body name="camera_center" pos="-0.008 0.0 0.03">
+                  <camera name="egocentric" pos="0 0 0" xyaxes="1 0 0 0 1 0" fovy="90"/>
                 </body>
                 <!-- Frame gripperframe -->
                 <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17"/>

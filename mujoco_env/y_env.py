@@ -2,6 +2,7 @@ import sys
 import random
 import numpy as np
 import xml.etree.ElementTree as ET
+import mujoco
 from mujoco_env.mujoco_parser import MuJoCoParserClass
 from mujoco_env.utils import prettify, sample_xyzs, rotation_matrix, add_title_to_img
 from mujoco_env.ik import solve_ik
@@ -21,7 +22,7 @@ class SimpleEnv:
                 plate_body_name='body_obj_plate_11',
                 spawn_x_range=(0.30, 0.46),
                 spawn_y_range=(-0.2, 0.2),
-                spawn_z_range=(0.82, 0.82),
+                spawn_z_range=(0.815, 0.815),
                 spawn_min_dist=0.2,
                 spawn_xy_margin=0.0,
                 spawn_fallback_min_dist=0.1):
@@ -83,6 +84,13 @@ class SimpleEnv:
         self.n_gripper_actuators = len(self.gripper_actuator_scales)
         self._prev_key_state = {}
         self._teleop_debug_counter = 0
+        # Mouse jogging state (middle mouse button drag)
+        self._mouse_last_x = None
+        self._mouse_last_y = None
+        # Mocap IK tracking state
+        self._mocap_body_id = -1
+        self._mocap_id = -1
+        self._last_mocap_pos = None
         self.joint_mins = np.array([self.env.model.joint(name).range[0] for name in self.joint_names], dtype=np.float32)
         self.joint_maxs = np.array([self.env.model.joint(name).range[1] for name in self.joint_names], dtype=np.float32)
 
@@ -148,6 +156,41 @@ class SimpleEnv:
 
         return focused, active_keys
 
+    def _get_mouse_delta(self):
+        """Poll middle mouse button and return (dx, dy, ctrl_held) cursor pixel deltas.
+        Resets tracking when button is released so there is no position jump on re-engage."""
+        viewer = getattr(self.env, 'viewer', None)
+        window = getattr(viewer, 'window', None)
+        if window is None:
+            self._mouse_last_x = None
+            self._mouse_last_y = None
+            return 0.0, 0.0, False
+        try:
+            middle_held = glfw.get_mouse_button(window, glfw.MOUSE_BUTTON_MIDDLE) == glfw.PRESS
+            xpos, ypos = glfw.get_cursor_pos(window)
+            ctrl_held = (
+                glfw.get_key(window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
+                glfw.get_key(window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS
+            )
+        except Exception:
+            self._mouse_last_x = None
+            self._mouse_last_y = None
+            return 0.0, 0.0, False
+        if not middle_held:
+            self._mouse_last_x = None
+            self._mouse_last_y = None
+            return 0.0, 0.0, ctrl_held
+        if self._mouse_last_x is None:
+            # First frame of hold — anchor position, no delta yet
+            self._mouse_last_x = xpos
+            self._mouse_last_y = ypos
+            return 0.0, 0.0, ctrl_held
+        dx = xpos - self._mouse_last_x
+        dy = ypos - self._mouse_last_y
+        self._mouse_last_x = xpos
+        self._mouse_last_y = ypos
+        return dx, dy, ctrl_held
+
     def init_viewer(self):
         '''
         Initialize the viewer
@@ -161,6 +204,33 @@ class SimpleEnv:
             use_rgb_overlay = False,
             loc_rgb_overlay = 'top right',
         )
+        # Pre-assign pert.select to the mocap target body so that
+        # Ctrl + right-drag immediately moves it, with no click-to-select needed.
+        self._init_mocap_pert()
+
+    def _init_mocap_pert(self):
+        '''Find the 'target' mocap body and assign it as the permanent pert selection.'''
+        try:
+            body_id = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_BODY, 'target')
+            self._mocap_body_id = body_id
+            self._mocap_id = (
+                int(self.env.model.body_mocapid[body_id])
+                if body_id >= 0 else -1
+            )
+            if body_id >= 0 and self._mocap_id >= 0:
+                viewer = getattr(self.env, 'viewer', None)
+                if viewer is not None and hasattr(viewer, 'pert'):
+                    # Only set select — mjv_initPerturb is called by _mouse_button_callback
+                    # when the user actually starts Ctrl+dragging, by which point xpos is valid.
+                    viewer.pert.select = body_id
+                print(f'[mocap] target body_id={body_id} mocap_id={self._mocap_id} — Ctrl+right-drag to move arm')
+            else:
+                print('[mocap] no target body found — mocap drag disabled')
+        except Exception as e:
+            print(f'[mocap init] {e}')
+            self._mocap_body_id = -1
+            self._mocap_id = -1
     def reset(self, seed = None):
         '''
         Reset the environment
@@ -170,22 +240,25 @@ class SimpleEnv:
             np.random.seed(seed=seed)
         
         # Set robot-specific initial configurations and home positions
-        # SO101 uses joint control, skip IK and use direct joint positions
         if self.robot_profile == 'so101' and self.action_type == 'delta_joint_angle':
-            # Direct joint configuration for SCARA-like robot
-            q_zero = np.array([0.0, 0.8, -0.8, 0.0, 0.0], dtype=np.float32)
+            # Direct joint configuration for joint-space control
+            q_zero = np.array([0.0, 0.8, -0.8, 0.0, np.pi / 2], dtype=np.float32)
             self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
         else:
-            # Use IK for Cartesian-controlled robots
+            # Use IK for Cartesian / eef_pose controlled robots
             if self.robot_profile == 'so100':
                 q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
                 p_trgt = np.array([0.25, -0.35, 0.95])
                 R_trgt = rpy2r(np.deg2rad([90, 0, 90]))
+            elif self.robot_profile == 'so101':
+                q_init = np.array([0.0, 0.8, -0.8, 0.0, np.pi / 2], dtype=np.float32)
+                p_trgt = np.array([0.35, -0.1, 0.95])
+                R_trgt = rpy2r(np.deg2rad([0, 90, 0]))
             else:  # omy
                 q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
                 p_trgt = np.array([0.3, 0.0, 1.0])
                 R_trgt = rpy2r(np.deg2rad([90, 0, 90]))
-                
+
             q_zero,ik_err_stack,ik_info = solve_ik(
                 env = self.env,
                 joint_names_for_ik = self.joint_names,
@@ -195,6 +268,29 @@ class SimpleEnv:
                 R_trgt       = R_trgt,
             )
             self.env.forward(q=q_zero,joint_names=self.joint_names,increase_tick=False)
+
+        # Sync mocap target sphere to current TCP position
+        try:
+            if self._mocap_id >= 0:
+                mujoco.mj_forward(self.env.model, self.env.data)
+                p_tcp, _ = self.env.get_pR_body(body_name=self.tcp_body_name)
+                self.env.data.mocap_pos[self._mocap_id] = p_tcp
+                self._last_mocap_pos = p_tcp.copy()
+        except Exception:
+            pass
+
+        # Legacy block: also sync via body_id lookup if _init_mocap_pert not yet called
+        try:
+            target_body_id = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_BODY, 'target')
+            if target_body_id >= 0:
+                mocap_id = self.env.model.body_mocapid[target_body_id]
+                if mocap_id >= 0 and self._mocap_id < 0:
+                    self.env.forward(increase_tick=False)
+                    p_tcp, _ = self.env.get_pR_body(body_name=self.tcp_body_name)
+                    self.env.data.mocap_pos[mocap_id] = p_tcp
+        except Exception:
+            pass
 
         # Set object positions
         obj_names = self.env.get_body_names(prefix='body_obj_')
@@ -273,8 +369,7 @@ class SimpleEnv:
             self.R0 = self.R0.dot(rpy2r(action[3:6]))
             
             # Adjust IK parameters based on robot profile
-            if self.robot_profile == 'so100':
-                # SO100 needs moderate damping
+            if self.robot_profile in ('so100', 'so101'):
                 ik_stepsize = 0.3
                 ik_eps = 0.5
                 max_ik_tick = 50
@@ -383,49 +478,51 @@ class SimpleEnv:
     
     def teleop_robot(self):
         '''
-        Teleoperate the robot using keyboard
+        Teleoperate the robot using keyboard or middle mouse button.
         returns:
             action: np.array, action to take
             done: bool, True if the user wants to reset the teleoperation
-        
-        Keys:
-            Movement:
-            W: Forward
-            S: Backward
-            A: Left
-            D: Right
-            R: Up
-            F: Down
 
-            Rotation:
-            Q: Yaw left
-            E: Yaw right
-            UP: Pitch up
-            DOWN: Pitch down
-            LEFT: Roll left
-            RIGHT: Roll right
+        Mouse (middle button drag):
+            Drag left/right : +/- Y  (world frame)
+            Drag up/down    : +/- Z  (world frame)
+            Ctrl + drag L/R : +/- X  (world frame)
 
-            ---------
-            z: reset
-            SPACEBAR: gripper open/close
-            ---------   
-
-
+        Keyboard:
+            W/S : +/- X (Forward/Backward)
+            A/D : +/- Y (Left/Right)
+            R/F : +/- Z (Up/Down)
+            Q/E : Yaw left/right
+            UP/DOWN     : Pitch up/down
+            LEFT/RIGHT  : Roll left/right
+            SPACE : gripper open/close
+            Z     : reset
         '''
-        # For SCARA-like robots (SO101), use joint-space control
+        # Joint-space control (SO101 default)
         if self.action_type == 'delta_joint_angle':
             return self._teleop_joint_space()
-        
-        # Standard Cartesian control for other robots
+
+        # Mocap / IK Cartesian control — drag the red target sphere
+        if self.action_type == 'eef_pose':
+            return self._teleop_mocap()
+
+        # Fallback: keyboard-only Cartesian control
         dpos = np.zeros(3)
         drot = np.eye(3)
-        
-        # Collect all WASD and RF inputs
-        # These deltas are in world frame, which is what the IK solver expects
-        # WASD: Horizontal plane movement (X-Y)
-        # R/F: Vertical movement (Z)
-        # Q/E: Yaw rotation
-        # Arrow keys: Pitch/Roll rotation
+
+        # Mouse jogging: middle button drag
+        # No Ctrl : dx -> Y,  -dy -> Z
+        # With Ctrl: dx -> X, -dy -> Z
+        _mouse_pos_scale = 0.00015  # metres per pixel
+        _mdx, _mdy, _mctrl = self._get_mouse_delta()
+        if abs(_mdx) > 0.2 or abs(_mdy) > 0.2:
+            if _mctrl:
+                dpos[0] += _mdx * _mouse_pos_scale
+            else:
+                dpos[1] += _mdx * _mouse_pos_scale
+            dpos[2] -= _mdy * _mouse_pos_scale
+
+        # Keyboard: WASD/RF/QE/arrows
         if self._key_is_down(glfw.KEY_W):
             dpos += np.array([0.007,0.0,0.0])  # Forward (+X)
         if self._key_is_down(glfw.KEY_S):
@@ -462,14 +559,130 @@ class SimpleEnv:
             print(f"[teleop-debug] focused={focused} keys={active_keys} action={np.round(action, 4)}")
         return action, False
     
+    def _teleop_mocap(self):
+        '''
+        Mocap / IK Cartesian teleoperation.
+
+        In the MuJoCo viewer: double-click the red sphere to select it, then
+        drag to reposition the arm.  MuJoCo moves the mocap body natively;
+        this method reads its position each step and feeds it to the IK solver
+        via the eef_pose action (delta_p = mocap_pos - current_IK_target).
+
+        Keyboard rotation still works:
+            Q/E        : yaw left / right
+            LEFT/RIGHT : roll
+            UP/DOWN    : pitch
+        SPACE: gripper open/close
+        Z    : reset episode
+        '''
+        delta_p = np.zeros(3, dtype=np.float32)
+
+        try:
+            target_body_id = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_BODY, 'target')
+            if target_body_id >= 0:
+                mocap_id = self.env.model.body_mocapid[target_body_id]
+                if mocap_id >= 0:
+                    # Pre-assign pert.select every step so Ctrl+drag always
+                    # controls this body — no double-click selection required.
+                    viewer = getattr(self.env, 'viewer', None)
+                    if viewer is not None and hasattr(viewer, 'pert'):
+                        if viewer.pert.select != target_body_id:
+                            viewer.pert.select = target_body_id
+                            mujoco.mjv_initPerturb(
+                                self.env.model, self.env.data,
+                                viewer.scn, viewer.pert)
+
+                    mocap_pos = self.env.data.mocap_pos[mocap_id].copy()
+                    delta_p = (mocap_pos - self.p0).astype(np.float32)
+                    # Clamp to avoid huge jumps on first frame
+                    delta_p = np.clip(delta_p, -0.02, 0.02)
+        except Exception as e:
+            print(f'[mocap] {e}')
+
+        # Keyboard rotation
+        drot = np.eye(3)
+        if self._key_is_down(glfw.KEY_Q):
+            drot = rotation_matrix(angle=0.03, direction=[0, 0, 1])[:3, :3]
+        if self._key_is_down(glfw.KEY_E):
+            drot = rotation_matrix(angle=-0.03, direction=[0, 0, 1])[:3, :3]
+        if self._key_is_down(glfw.KEY_LEFT):
+            drot = rotation_matrix(angle=0.03, direction=[0, 1, 0])[:3, :3]
+        if self._key_is_down(glfw.KEY_RIGHT):
+            drot = rotation_matrix(angle=-0.03, direction=[0, 1, 0])[:3, :3]
+        if self._key_is_down(glfw.KEY_UP):
+            drot = rotation_matrix(angle=0.03, direction=[1, 0, 0])[:3, :3]
+        if self._key_is_down(glfw.KEY_DOWN):
+            drot = rotation_matrix(angle=-0.03, direction=[1, 0, 0])[:3, :3]
+
+        if self._key_is_pressed_once(glfw.KEY_SPACE):
+            self.gripper_state = not self.gripper_state
+        if self._key_is_pressed_once(glfw.KEY_Z):
+            return np.zeros(7, dtype=np.float32), True
+
+        drpy = r2rpy(drot).astype(np.float32)
+        action = np.concatenate([delta_p, drpy,
+                                  np.array([self.gripper_state], dtype=np.float32)])
+        return action, False
+
     def _teleop_joint_space(self):
         '''
-        Joint-space teleoperation for SCARA-like robots (SO101)
-        Maps WASD/RF to joint velocities directly
+        Joint-space teleoperation for SO101.
+
+        Mouse (middle button drag):
+            Drag left/right     : shoulder_pan
+            Drag up/down        : shoulder_lift  (drag up = lift up)
+            Ctrl + drag L/R     : elbow_flex
+            Ctrl + drag up/down : wrist_flex
+
+        Keyboard (unchanged):
+            A/D        : shoulder_pan
+            W/S        : shoulder_lift
+            R/F        : elbow_flex
+            UP/DOWN    : wrist_flex
+            LEFT/RIGHT : wrist_roll
+            SPACE      : gripper open/close
+            Z          : reset
         '''
         dq = np.zeros(self.n_arm_joints, dtype=np.float32)
-        joint_vel = 0.03  # Joint velocity magnitude
-        
+        joint_vel = 0.03  # Joint velocity magnitude per keyboard press
+
+        # Mocap IK tracking: Ctrl + right-drag the red sphere to move the arm.
+        # pert.select is pre-assigned in init_viewer so drag works immediately.
+        if self._mocap_id >= 0:
+            mocap_pos = self.env.data.mocap_pos[self._mocap_id].copy()
+            if self._last_mocap_pos is None:
+                self._last_mocap_pos = mocap_pos.copy()
+            elif np.linalg.norm(mocap_pos - self._last_mocap_pos) > 5e-4:
+                q_current = self.env.get_qpos_joints(joint_names=self.joint_names).copy()
+                q_ik, _, _ = solve_ik(
+                    env                = self.env,
+                    joint_names_for_ik = self.joint_names,
+                    body_name_trgt     = self.tcp_body_name,
+                    q_init             = q_current,
+                    p_trgt             = mocap_pos,
+                    R_trgt             = None,
+                    max_ik_tick        = 30,
+                    ik_stepsize        = 0.5,
+                    ik_eps             = 0.01,
+                    ik_err_th          = 0.01,
+                    verbose_warning    = False,
+                    restore_state      = True,
+                )
+                dq += np.clip(q_ik - q_current, -joint_vel * 4, joint_vel * 4)
+            self._last_mocap_pos = mocap_pos.copy()
+
+        # Middle-mouse-button drag: fine per-joint jog (unchanged)
+        _mouse_jnt_scale = 0.0005
+        _mdx, _mdy, _mctrl = self._get_mouse_delta()
+        if abs(_mdx) > 0.2 or abs(_mdy) > 0.2:
+            if _mctrl:
+                dq[2] += _mdx * _mouse_jnt_scale
+                dq[3] -= _mdy * _mouse_jnt_scale
+            else:
+                dq[0] += _mdx * _mouse_jnt_scale
+                dq[1] -= _mdy * _mouse_jnt_scale
+
         # W/S: shoulder lift
         if self._key_is_down(glfw.KEY_W):
             dq[1] += joint_vel  # Shoulder lift up

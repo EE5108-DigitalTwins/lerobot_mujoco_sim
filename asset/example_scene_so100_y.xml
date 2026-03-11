@@ -18,7 +18,7 @@
 
     <include file="./tabletop/object/floor_isaac_style.xml" />
     <include file="./tabletop/object/object_table.xml" />
-    <include file="./tabletop/object/obj_redbull.xml"/>
+    <include file="./tabletop/object/obj_blocks.xml"/>
     <include file="./tabletop/object/obj_bin.xml"/>
 
     <include file="./so_arm100/SO100/so100.xml" />

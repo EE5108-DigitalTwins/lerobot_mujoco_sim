@@ -18,8 +18,18 @@
 
     <include file="./tabletop/object/floor_isaac_style.xml" />
     <include file="./tabletop/object/object_table.xml" />
-    <include file="./tabletop/object/obj_redbull.xml"/>
+    <include file="./tabletop/object/obj_blocks.xml"/>
     <include file="./tabletop/object/obj_bin.xml"/>
 
     <include file="./so_arm100/SO101/so101_new_calib.xml" />
+
+    <!-- Mocap IK target: in the viewer, double-click the red sphere then drag
+         to move the arm.  Non-colliding; position is reset to the TCP on env reset.
+         Only active when action_type='eef_pose'. -->
+    <worldbody>
+        <body name="target" mocap="true" pos="0.35 -0.1 0.95">
+            <geom type="sphere" size="0.025" rgba="1 0.2 0.2 0.7"
+                  contype="0" conaffinity="0"/>
+        </body>
+    </worldbody>
 </mujoco>
