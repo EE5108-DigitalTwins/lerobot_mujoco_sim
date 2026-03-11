@@ -6,7 +6,7 @@ import mujoco
 from mujoco_env.mujoco_parser import MuJoCoParserClass
 from mujoco_env.utils import prettify, sample_xyzs, rotation_matrix, add_title_to_img
 from mujoco_env.ik import solve_ik
-from mujoco_env.transforms import rpy2r, r2rpy
+from mujoco_env.transforms import rpy2r, r2rpy, r2quat, quat2r
 import os
 import copy
 import glfw
@@ -91,6 +91,7 @@ class SimpleEnv:
         self._mocap_body_id = -1
         self._mocap_id = -1
         self._last_mocap_pos = None
+        self._last_mocap_quat = None
         self.joint_mins = np.array([self.env.model.joint(name).range[0] for name in self.joint_names], dtype=np.float32)
         self.joint_maxs = np.array([self.env.model.joint(name).range[1] for name in self.joint_names], dtype=np.float32)
 
@@ -269,13 +270,17 @@ class SimpleEnv:
             )
             self.env.forward(q=q_zero,joint_names=self.joint_names,increase_tick=False)
 
-        # Sync mocap target sphere to current TCP position
+        # Sync mocap target sphere to current TCP position and orientation
         try:
             if self._mocap_id >= 0:
                 mujoco.mj_forward(self.env.model, self.env.data)
-                p_tcp, _ = self.env.get_pR_body(body_name=self.tcp_body_name)
+                p_tcp, R_tcp = self.env.get_pR_body(body_name=self.tcp_body_name)
                 self.env.data.mocap_pos[self._mocap_id] = p_tcp
+                # Convert rotation matrix to quaternion for mocap_quat (MuJoCo: [w,x,y,z])
+                q_tcp = r2quat(R_tcp)
+                self.env.data.mocap_quat[self._mocap_id] = q_tcp
                 self._last_mocap_pos = p_tcp.copy()
+                self._last_mocap_quat = q_tcp.copy()
         except Exception:
             pass
 
@@ -651,26 +656,33 @@ class SimpleEnv:
         # pert.select is pre-assigned in init_viewer so drag works immediately.
         if self._mocap_id >= 0:
             mocap_pos = self.env.data.mocap_pos[self._mocap_id].copy()
+            mocap_quat = self.env.data.mocap_quat[self._mocap_id].copy()
             if self._last_mocap_pos is None:
                 self._last_mocap_pos = mocap_pos.copy()
-            elif np.linalg.norm(mocap_pos - self._last_mocap_pos) > 5e-4:
-                q_current = self.env.get_qpos_joints(joint_names=self.joint_names).copy()
-                q_ik, _, _ = solve_ik(
-                    env                = self.env,
-                    joint_names_for_ik = self.joint_names,
-                    body_name_trgt     = self.tcp_body_name,
-                    q_init             = q_current,
-                    p_trgt             = mocap_pos,
-                    R_trgt             = None,
-                    max_ik_tick        = 30,
-                    ik_stepsize        = 0.5,
-                    ik_eps             = 0.01,
-                    ik_err_th          = 0.01,
-                    verbose_warning    = False,
-                    restore_state      = True,
-                )
-                dq += np.clip(q_ik - q_current, -joint_vel * 4, joint_vel * 4)
+                self._last_mocap_quat = mocap_quat.copy()
+            else:
+                pos_changed = np.linalg.norm(mocap_pos - self._last_mocap_pos) > 5e-4
+                quat_changed = np.linalg.norm(mocap_quat - self._last_mocap_quat) > 5e-4
+                if pos_changed or quat_changed:
+                    q_current = self.env.get_qpos_joints(joint_names=self.joint_names).copy()
+                    R_trgt = quat2r(mocap_quat) if quat_changed else None
+                    q_ik, _, _ = solve_ik(
+                        env                = self.env,
+                        joint_names_for_ik = self.joint_names,
+                        body_name_trgt     = self.tcp_body_name,
+                        q_init             = q_current,
+                        p_trgt             = mocap_pos,
+                        R_trgt             = R_trgt,
+                        max_ik_tick        = 30,
+                        ik_stepsize        = 0.5,
+                        ik_eps             = 0.01,
+                        ik_err_th          = 0.01,
+                        verbose_warning    = False,
+                        restore_state      = True,
+                    )
+                    dq += np.clip(q_ik - q_current, -joint_vel * 4, joint_vel * 4)
             self._last_mocap_pos = mocap_pos.copy()
+            self._last_mocap_quat = mocap_quat.copy()
 
         # Middle-mouse-button drag: fine per-joint jog (unchanged)
         _mouse_jnt_scale = 0.0005

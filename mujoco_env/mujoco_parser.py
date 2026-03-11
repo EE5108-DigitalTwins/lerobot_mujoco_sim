@@ -161,7 +161,7 @@ class MinimalCallbacks:
             self._last_right_click_time = time_now
 
         # set perturbation
-        key = mods == glfw.MOD_CONTROL
+        key = bool(mods & glfw.MOD_CONTROL)
         newperturb = 0
         if key and self.pert.select > 0:
             # right: translate, left: rotate
