@@ -71,13 +71,28 @@ while PnPEnv.env.is_viewer_alive():
         # Get the action from dataset
         data = next(iter_dataloader)
         if step == 0:
-            # Reset the object pose based on the dataset
+            # Reset the object pose based on the dataset.
+            # obj_init stores mug + plate poses; spawn.block_xyz stores the
+            # initial spawn positions of all movable blocks.
             PnPEnv.set_obj_pose(data['obj_init'][0,:3], data['obj_init'][0,3:])
+
+            # Restore the full block spawn configuration from capture time.
+            spawn_xyz = data['spawn.block_xyz'][0].numpy()  # shape (4, 3)
+            all_obj_names = PnPEnv.env.get_body_names(prefix='body_obj_')
+            obj_names = [n for n in all_obj_names if n != PnPEnv.plate_body_name]
+            if spawn_xyz.shape[0] != len(obj_names):
+                raise ValueError(
+                    f"spawn.block_xyz has shape {spawn_xyz.shape} but there are "
+                    f"{len(obj_names)} movable block bodies in the scene."
+                )
+            for idx, body_name in enumerate(obj_names):
+                PnPEnv.env.set_p_base_body(body_name=body_name, p=spawn_xyz[idx, :])
+                PnPEnv.env.set_R_base_body(body_name=body_name, R=np.eye(3, 3))
         # Get the action from dataset
         action = data['action'].numpy()
         obs = PnPEnv.step(action[0])
 
-        # Visualize the image from dataset to rgb_overlay
+        # Visualize the images from dataset (topview + frontview) to rgb_overlay
         PnPEnv.rgb_agent = data['observation.image'][0].numpy()*255
         PnPEnv.rgb_ego = data['observation.wrist_image'][0].numpy()*255
         PnPEnv.rgb_agent = PnPEnv.rgb_agent.astype(np.uint8)

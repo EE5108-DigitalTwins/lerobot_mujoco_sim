@@ -20,8 +20,8 @@ class SimpleEnv:
                 seed = None,
                 mug_body_name='body_obj_mug_5',
                 plate_body_name='body_obj_plate_11',
-                spawn_x_range=(0.25, 0.52),
-                spawn_y_range=(0.02, 0.22),
+                spawn_x_range=(0.20, 0.3),
+                spawn_y_range=(0.02, 0.1),
                 spawn_z_range=(0.815, 0.815),
                 spawn_min_dist=0.2,
                 spawn_xy_margin=0.0,
@@ -147,6 +147,11 @@ class SimpleEnv:
             ("moving_jaw_pad", [0.15, 0.55, 1.0, 0.45]),
             ("gripper_palm_pad", [1.0, 0.8, 0.15, 0.30]),
         ]
+
+        # Will be populated on each reset with the sampled spawn configuration
+        # of all movable block objects (excluding the fixed bin/plate).
+        self.spawn_obj_names = []
+        self.spawn_obj_xyzs = None
 
         self.init_viewer()
         self.reset(seed)
@@ -459,6 +464,10 @@ class SimpleEnv:
             print(f"[SimpleEnv.reset] object sampling failed: {exc}")
             print(f"[SimpleEnv.reset] retrying with min_dist={fallback_min_dist}")
             obj_xyzs = self._sample_object_xyzs(n_obj=n_obj, min_dist=fallback_min_dist)
+
+        # Record and apply the initial spawn configuration of all movable blocks.
+        self.spawn_obj_names = list(obj_names)
+        self.spawn_obj_xyzs = obj_xyzs.copy()
         for obj_idx in range(n_obj):
             self.env.set_p_base_body(body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :])
             self.env.set_R_base_body(body_name=obj_names[obj_idx], R=np.eye(3, 3))
@@ -587,15 +596,14 @@ class SimpleEnv:
         '''
         grab images from the environment
         returns:
-            rgb_agent: np.array, rgb image from the top view
-            rgb_aux: np.array, secondary image (used as wrist/ego or side view)
+            rgb_top:   np.array, rgb image from the topview camera
+            rgb_front: np.array, rgb image from the frontview camera
         '''
-        # Primary stream: top-down agent view
+        # Primary stream: top-down view
         self.rgb_agent = self.env.get_fixed_cam_rgb(cam_name='topview')
-        # Secondary stream: use the sideview camera as the "wrist/ego" stream
-        # so that two distinct video streams are recorded and visualised.
+        # Secondary stream: frontview camera (uses MuJoCo 'sideview' handle)
         self.rgb_ego = self.env.get_fixed_cam_rgb(cam_name='sideview')
-        # Keep rgb_side in sync with the secondary stream for overlays.
+        # Keep rgb_side in sync with the secondary stream for overlays in teleop.
         self.rgb_side = self.rgb_ego.copy()
         return self.rgb_agent, self.rgb_ego
         
@@ -612,19 +620,20 @@ class SimpleEnv:
         if self.show_gripper_pad_debug:
             self._plot_gripper_contact_pads()
 
-        # Always show both camera streams when available:
-        # - Top View (agent) in the top-right
-        # - Secondary View (wrist/side) in the bottom-right
-        rgb_agent_view = add_title_to_img(self.rgb_agent, text='Top View', shape=(640,480))
-        self.env.viewer_rgb_overlay(rgb_agent_view, loc='top right')
+        # Topview camera is always shown in the top-right.
+        rgb_top_view = add_title_to_img(self.rgb_agent, text='Top View', shape=(640,480))
+        self.env.viewer_rgb_overlay(rgb_top_view, loc='top right')
 
+        # Frontview camera:
+        # - During teleoperation (data collection), show it in the top-left.
+        # - During dataset replay, show it in the bottom-right.
         if self.rgb_ego is not None:
-            rgb_ego_view = add_title_to_img(self.rgb_ego, text='Wrist / Side View', shape=(640,480))
-            self.env.viewer_rgb_overlay(rgb_ego_view, loc='bottom right')
-
-        if teleop:
-            rgb_side_view = add_title_to_img(self.rgb_side, text='Side View', shape=(640,480))
-            self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
+            if teleop:
+                rgb_front_view = add_title_to_img(self.rgb_ego, text='Front View', shape=(640,480))
+                self.env.viewer_rgb_overlay(rgb_front_view, loc='top left')
+            else:
+                rgb_front_view = add_title_to_img(self.rgb_ego, text='Front View', shape=(640,480))
+                self.env.viewer_rgb_overlay(rgb_front_view, loc='bottom right')
             self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list(as_text=True)))
             self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list(as_text=True)))
             focused, active_keys = self._teleop_debug_status()

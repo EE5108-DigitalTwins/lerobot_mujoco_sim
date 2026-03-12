@@ -301,6 +301,8 @@ def create_or_load_dataset(config):
             robot_type=config.robot_type,
             fps=config.fps,
             features={
+                # observation.image:   topview camera frames
+                # observation.wrist_image: frontview camera frames
                 "observation.image": {
                     "dtype": "image",
                     "shape": (config.image_size, config.image_size, 3),
@@ -310,6 +312,14 @@ def create_or_load_dataset(config):
                     "dtype": "image",
                     "shape": (config.image_size, config.image_size, 3),
                     "names": ["height", "width", "channel"],
+                },
+                # spawn.block_xyz: per-episode initial spawn positions of all
+                # movable blocks (excluding the fixed bin/plate). In the SO101
+                # tabletop scene this is always 4 blocks.
+                "spawn.block_xyz": {
+                    "dtype": "float32",
+                    "shape": (4, 3),
+                    "names": ["blocks", "xyz"],
                 },
                 "observation.state": {
                     "dtype": "float32",
@@ -399,6 +409,9 @@ def collect_demonstrations(env, dataset, config):
                         "observation.state": ee_pose,
                         "action": joint_q,
                         "obj_init": env.obj_init_pose,
+                        # Store the initial block spawn configuration so that
+                        # replay can reconstruct the exact scene.
+                        "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
                     },
                     task=config.task_name,
                 )

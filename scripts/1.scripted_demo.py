@@ -45,6 +45,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
+import mujoco
 
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
@@ -99,15 +100,21 @@ class ScriptedConfig:
     retract_height: float = 0.25
 
     # Spawn bounds (passed straight to SimpleEnv)
-    spawn_x_min: float = 0.25
-    spawn_x_max: float = 0.52
+    # Defaults mirror configs/collect_data.yaml so scripted demos use the
+    # same object spawn region as interactive data collection.
+    spawn_x_min: float = 0.20
+    spawn_x_max: float = 0.40
     spawn_y_min: float = 0.02
-    spawn_y_max: float = 0.22
+    spawn_y_max: float = 0.15
     spawn_z_min: float = 0.815
     spawn_z_max: float = 0.815
-    spawn_min_dist: float = 0.2
+    # The interactive collector uses a tight tabletop area with four blocks and
+    # a fixed bin. To avoid frequent sampling failures in this constrained
+    # region, use more permissive minimum-distance settings than the original
+    # SimpleEnv defaults.
+    spawn_min_dist: float = 0.05
     spawn_xy_margin: float = 0.0
-    spawn_fallback_min_dist: float = 0.1
+    spawn_fallback_min_dist: float = 0.03
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +222,17 @@ def parse_args() -> ScriptedConfig:
 # ---------------------------------------------------------------------------
 
 def build_env(cfg: ScriptedConfig) -> SimpleEnv:
-    """Create SimpleEnv with absolute joint-angle control (best for scripted use)."""
+    """
+    Create SimpleEnv using the same control mode conventions as 1.collect_data.py.
+
+    SO-101 uses joint-space delta control for teleoperation; we mirror that here
+    so that scripted trajectories exercise the same dynamics, while still
+    storing absolute joint states in the dataset.
+    """
+    action_type = "delta_joint_angle" if cfg.env_robot_profile == "so101" else "joint_angle"
     return SimpleEnv(
         cfg.xml_path,
-        action_type="joint_angle",
+        action_type=action_type,
         robot_profile=cfg.env_robot_profile,
         seed=cfg.seed,
         state_type="joint_angle",
@@ -395,6 +409,9 @@ class PickPlaceFSM:
     def __init__(self, env: SimpleEnv, cfg: ScriptedConfig) -> None:
         self.env = env
         self.cfg = cfg
+        # World-frame offset from gripper tip site ('gripperframe') to TCP body
+        # ('gripper'). Populated lazily on first episode.
+        self._tcp_tip_offset: np.ndarray | None = None
 
     # ------------------------------------------------------------------
     # Primitive motions
@@ -412,7 +429,18 @@ class PickPlaceFSM:
         record: bool = True,
     ):
         """Apply one control step, run physics, optionally record."""
-        action = np.concatenate([q_arm, [gripper]], dtype=np.float32)
+        # For SO-101 we use delta-joint control (same as teleop).  Internally
+        # the FSM still reasons in absolute joint space; we convert to deltas
+        # here so SimpleEnv.step() integrates from its stored last_q.
+        if self.env.action_type == "delta_joint_angle":
+            # SimpleEnv.last_q holds the last commanded arm joints (no gripper).
+            prev_q = getattr(self.env, "last_q", _get_arm_q(self.env))
+            dq_arm = q_arm - prev_q
+            action_arm = dq_arm
+        else:
+            action_arm = q_arm
+
+        action = np.concatenate([action_arm, [gripper]], dtype=np.float32)
         joint_state = self.env.step(action)     # sets servo targets → returns actual qpos
         self._physics_steps(self.cfg.sim_substeps)
 
@@ -479,27 +507,79 @@ class PickPlaceFSM:
         p_bin = env.env.get_p_body(env.plate_body_name).copy()
         obj_init = env.obj_init_pose.copy()
 
+        # Lazily compute palm-to-tip offset in world frame using the
+        # 'gripperframe' site when available.
+        if self._tcp_tip_offset is None:
+            try:
+                site_id = mujoco.mj_name2id(
+                    env.env.model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe"
+                )
+                if site_id >= 0:
+                    p_tip_now = env.env.data.site_xpos[site_id].copy()
+                    p_palm_now = env.env.get_p_body(env.tcp_body_name).copy()
+                    # Vector that, when added to desired tip position, yields
+                    # the corresponding palm/TCP target in world coordinates.
+                    self._tcp_tip_offset = p_palm_now - p_tip_now
+                else:
+                    self._tcp_tip_offset = np.zeros(3, dtype=np.float32)
+            except Exception:
+                self._tcp_tip_offset = np.zeros(3, dtype=np.float32)
+
         # --- Waypoint positions ---
         # p_obj[2] is the block body-centre after physics settling (~table_z + 0.0125 m).
         # p_bin[2] is the bin body-origin (fixed in XML at 0.80 m).
-        p_approach  = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.approach_height])
-        p_grasp     = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.grasp_height])
-        p_lift      = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.lift_height])
-        p_above_bin = np.array([p_bin[0], p_bin[1], p_obj[2] + cfg.lift_height])
-        p_place     = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.place_height])
-        p_retract   = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.retract_height])
+        # Tip-centric waypoints (desired positions for the jaw-tip site).
+        p_tip_approach  = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.approach_height])
+        p_tip_grasp     = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.grasp_height])
+        p_tip_lift      = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.lift_height])
+        p_tip_above_bin = np.array([p_bin[0], p_bin[1], p_obj[2] + cfg.lift_height])
+        p_tip_place     = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.place_height])
+        p_tip_retract   = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.retract_height])
 
-        R = _GRASP_R
+        # Convert desired tip positions to TCP/palm targets using the cached
+        # world-frame offset. This approximately compensates for the gripper
+        # link geometry without changing the low-level IK implementation.
+        offset = self._tcp_tip_offset if self._tcp_tip_offset is not None else np.zeros(3, dtype=np.float32)
+        p_approach  = p_tip_approach  + offset
+        p_grasp     = p_tip_grasp     + offset
+        p_lift      = p_tip_lift      + offset
+        p_above_bin = p_tip_above_bin + offset
+        p_place     = p_tip_place     + offset
+        p_retract   = p_tip_retract   + offset
+
+        # Orientation policy: for SO-101, do not enforce a specific tool
+        # orientation in IK. This greatly improves reachability across the
+        # full spawn range; the arm will choose any feasible orientation that
+        # gets the TCP close to the positional waypoints.
+        R_approach  = None
+        R_grasp     = None
+        R_lift      = None
+        R_above_bin = None
+        R_place     = None
+        R_retract   = None
+
+        # Debug: compare IK targets against current TCP and object/bin positions.
+        p_tcp, _ = env.env.get_pR_body(body_name=env.tcp_body_name)
+        print("[DEBUG] p_tcp =", p_tcp, "p_obj =", p_obj, "p_bin =", p_bin)
+        for name, p_wp in [
+            ("approach", p_tip_approach),
+            ("grasp", p_tip_grasp),
+            ("lift", p_tip_lift),
+            ("above_bin", p_tip_above_bin),
+            ("place", p_tip_place),
+            ("retract", p_tip_retract),
+        ]:
+            print(f"[DEBUG] {name}: {p_wp}")
 
         # --- Solve IK for all waypoints (arm-only, no gripper) ---
         print("    [IK] solving 6 waypoints…", end=" ", flush=True)
         q0          = _get_arm_q(env)
-        q_approach, e0 = _solve_wp(env, p_approach,  R, q0,         cfg.max_ik_tick, cfg.ik_err_th)
-        q_grasp,    e1 = _solve_wp(env, p_grasp,     R, q_approach, cfg.max_ik_tick, cfg.ik_err_th)
-        q_lift,     e2 = _solve_wp(env, p_lift,      R, q_grasp,    cfg.max_ik_tick, cfg.ik_err_th)
-        q_above_bin,e3 = _solve_wp(env, p_above_bin, R, q_lift,     cfg.max_ik_tick, cfg.ik_err_th)
-        q_place,    e4 = _solve_wp(env, p_place,     R, q_above_bin,cfg.max_ik_tick, cfg.ik_err_th)
-        q_retract,  e5 = _solve_wp(env, p_retract,   R, q_place,    cfg.max_ik_tick, cfg.ik_err_th)
+        q_approach, e0 = _solve_wp(env, p_approach,  R_approach,  q0,         cfg.max_ik_tick, cfg.ik_err_th)
+        q_grasp,    e1 = _solve_wp(env, p_grasp,     R_grasp,     q_approach, cfg.max_ik_tick, cfg.ik_err_th)
+        q_lift,     e2 = _solve_wp(env, p_lift,      R_lift,      q_grasp,    cfg.max_ik_tick, cfg.ik_err_th)
+        q_above_bin,e3 = _solve_wp(env, p_above_bin, R_above_bin, q_lift,     cfg.max_ik_tick, cfg.ik_err_th)
+        q_place,    e4 = _solve_wp(env, p_place,     R_place,     q_above_bin,cfg.max_ik_tick, cfg.ik_err_th)
+        q_retract,  e5 = _solve_wp(env, p_retract,   R_retract,   q_place,    cfg.max_ik_tick, cfg.ik_err_th)
 
         max_err = max(e0, e1, e2, e3, e4, e5)
         print(f"max IK err = {max_err:.4f} m")
