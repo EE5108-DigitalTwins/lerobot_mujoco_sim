@@ -22,11 +22,12 @@ lerobot-mujoco-tutorial/
 │   └── act_y/            # ACT model checkpoints
 ├── configs/              # YAML configuration files
 │   ├── collect_data.yaml
-│   ├── pi0_omy.yaml
-│   └── smolvla_omy.yaml
+│   ├── pi0_so101.yaml
+│   └── smolvla_so101.yaml
 ├── data/                 # Demonstration datasets
 │   ├── demo_data/
 │   ├── demo_data_example/
+│   ├── demo_data_so101/
 │   └── demo_data_so100*/
 ├── media/                # Media files for documentation
 ├── mujoco_env/          # MuJoCo environment implementation
@@ -116,6 +117,26 @@ xml_path = './asset/so_arm100/SO101/so101_new_calib.xml'   # From notebooks/
 
 ## Running Scripts vs Notebooks
 
+## Arm Profiles and Defaults
+
+The project supports multiple robot arm profiles:
+- `so101` (default)
+- `so100`
+- `omy`
+
+By default, data collection loads the SO101 scene/profile from [configs/collect_data.yaml](configs/collect_data.yaml):
+- `env_robot_profile: so101`
+- `xml_path: ./asset/scene_so101_y.xml`
+- `root: ./demo_data_so101`
+
+You can switch profiles at runtime with:
+```bash
+python 1.collect_data.py --env-robot-profile so100
+python 1.collect_data.py --env-robot-profile omy
+```
+
+Or by editing [configs/collect_data.yaml](configs/collect_data.yaml).
+
 You can use either the Python scripts in `scripts/` or the Jupyter notebooks in `notebooks/`:
 
 **Python Scripts:**
@@ -143,10 +164,10 @@ Collect demonstration data for the given environment.
 The task is to pick a mug and place it on the plate. The environment recognizes the success if the mug is on the plate, gthe ripper opened, and the end-effector positioned above the mug.
 
 **Default Scene Configuration:**
-The default scene `asset/example_scene_y.xml` uses:
-- Object to pick: `body_obj_redbull` (Red Bull can)
+The default scene `asset/scene_so101_y.xml` uses:
+- Object to pick: `body_obj_block_3` (green block)
 - Target location: `body_obj_bin` (bin)
-- Task: "Put red bull can in the bin"
+- Task: "Put green block in the bin"
 
 If using a custom scene, update the `mug_body_name` and `plate_body_name` parameters accordingly.
 
@@ -195,9 +216,9 @@ features={
 
 ```
 
-This will make the dataset in the `data/demo_data` folder, which will look like this:
+This will make the dataset in the `data/demo_data_so101` folder (by default), which will look like this:
 ```
-data/demo_data/
+data/demo_data_so101/
 ├── data/
 │   ├── chunk-000/
 │   │   ├── episode_000000.parquet
@@ -308,18 +329,18 @@ python visualize_data_language.py
     <th> Dataset  🤗</th>
     </tr>
     <tr>
-        <td> <a href="https://huggingface.co/Jeongeun/omy_pnp_pi0"> pi_0 finetuned </a></td>
-        <td> <a href="https://huggingface.co/datasets/Jeongeun/omy_pnp_language"> dataset </a></td>
+      <td> <a href="https://huggingface.co/Jeongeun/so101_pnp_pi0"> pi_0 finetuned </a></td>
+      <td> <a href="https://huggingface.co/datasets/Jeongeun/so101_pnp_language"> dataset </a></td>
     </tr>
     <tr>
-        <td> <a href="https://huggingface.co/Jeongeun/omy_pnp_smolvla"> smolvla finetuned </td>
+      <td> <a href="https://huggingface.co/Jeongeun/so101_pnp_smolvla"> smolvla finetuned </td>
         <td>  same dataset</td>
     </tr>
 </table>
 
 ## 7. Train and Deploy pi_0
 - [scripts/train_model.py](scripts/train_model.py): Training script
-- [configs/pi0_omy.yaml](configs/pi0_omy.yaml): Training configuration file
+- [configs/pi0_so101.yaml](configs/pi0_so101.yaml): Training configuration file
 - [notebooks/7.pi0.ipynb](notebooks/7.pi0.ipynb): Policy deployment
 - [scripts/pi0_deploy.py](scripts/pi0_deploy.py): Policy deployment script
 
@@ -327,7 +348,7 @@ python visualize_data_language.py
 
 ### Training Scripts
 ```bash
-python train_model.py --config_path configs/pi0_omy.yaml
+python train_model.py --config_path configs/pi0_so101.yaml
 ```
 
 
@@ -344,7 +365,7 @@ python train_model.py --config_path configs/pi0_omy.yaml
 ### Configuration File
 ```
 dataset:
-  repo_id: omy_pnp_language # Repository ID
+  repo_id: so101_pnp_language # Repository ID
   root: ../data/demo_data_language # Your root for data file!
 policy:
   type : pi0
@@ -352,9 +373,9 @@ policy:
   n_action_steps: 5
   
 save_checkpoint: true
-output_dir: ../checkpoints/pi0_omy # Save directory
+output_dir: ../checkpoints/pi0_so101 # Save directory
 batch_size: 16
-job_name : pi0_omy
+job_name : pi0_so101
 resume: false 
 seed : 42
 num_workers: 8
@@ -367,7 +388,7 @@ use_policy_training_preset: true
   
 wandb:
   enable: true
-  project: pi0_omy
+  project: pi0_so101
   entity: <your_wandb_entity>
   disable_artifact: true
 ```
@@ -375,7 +396,7 @@ wandb:
 ## 8. Train and Deploy Smolvla
 
 - [scripts/train_model.py](scripts/train_model.py): Training script
-- [configs/smolvla_omy.yaml](configs/smolvla_omy.yaml): Training configuration file
+- [configs/smolvla_so101.yaml](configs/smolvla_so101.yaml): Training configuration file
 - [notebooks/8.smolvla.ipynb](notebooks/8.smolvla.ipynb): Policy deployment
 - [scripts/smolvla_deploy.py](scripts/smolvla_deploy.py): Policy deployment script
 
@@ -383,7 +404,7 @@ wandb:
 
 ### Training Scripts
 ```bash
-python train_model.py --config_path configs/smolvla_omy.yaml
+python train_model.py --config_path configs/smolvla_so101.yaml
 ```
 
 
@@ -400,7 +421,7 @@ python train_model.py --config_path configs/smolvla_omy.yaml
 ### Configuration File
 ```
 dataset:
-  repo_id: omy_pnp_language # Repository ID
+  repo_id: so101_pnp_language # Repository ID
   root: ../data/demo_data_language # Your root for data file!
 policy:
   type : smolvla
@@ -409,9 +430,9 @@ policy:
   device: cuda
   
 save_checkpoint: true
-output_dir: ../checkpoints/smolvla_omy # Save directory
+output_dir: ../checkpoints/smolvla_so101 # Save directory
 batch_size: 16
-job_name : smolvla_omy
+job_name : smolvla_so101
 resume: false 
 seed : 42
 num_workers: 8
@@ -424,7 +445,7 @@ use_policy_training_preset: true
   
 wandb:
   enable: true
-  project: smolvla_omy
+  project: smolvla_so101
   entity: <your_wandb_entity>
   disable_artifact: true
 ```

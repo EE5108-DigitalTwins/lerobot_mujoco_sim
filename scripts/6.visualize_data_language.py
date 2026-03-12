@@ -7,7 +7,7 @@
 
 # [Optional] Download collected dataset
 # If you want to use the collected dataset, please download it from Hugging Face.
-# !git clone https://huggingface.co/datasets/Jeongeun/omy_pnp_language
+# !git clone https://huggingface.co/datasets/Jeongeun/so101_pnp_language
 
 import sys
 from pathlib import Path
@@ -22,11 +22,11 @@ from lerobot.common.datasets.utils import write_json, serialize_dict
 
 ROOT = str(PROJECT_ROOT / 'data' / 'demo_data_language')  # The root directory to save the demonstrations
 # If you have downloaded the dataset from Hugging Face, you can set the root to the directory where the dataset is stored
-# ROOT = './omy_pnp_language'  # if you want to use the example data provided, root = './omy_pnp_language' instead!
-dataset = LeRobotDataset('omy_pnp_language', root=ROOT)
+# ROOT = './so101_pnp_language'  # if you want to use the example data provided, root = './so101_pnp_language' instead!
+dataset = LeRobotDataset('so101_pnp_language', root=ROOT)
 
 # If you want to use the collected dataset, please download it from Hugging Face.
-# dataset = LeRobotDataset('omy_pnp_language', root='omy_pnp_language')
+# dataset = LeRobotDataset('so101_pnp_language', root='so101_pnp_language')
 
 # ## Load Dataset
 
@@ -62,7 +62,7 @@ dataloader = torch.utils.data.DataLoader(
 # ## Visualize your Dataset on Simulation
 
 from mujoco_env.y_env2 import SimpleEnv2
-xml_path = str(PROJECT_ROOT / 'asset' / 'example_scene_y2.xml')
+xml_path = str(PROJECT_ROOT / 'asset' / 'scene_y2.xml')
 PnPEnv = SimpleEnv2(xml_path, action_type='joint_angle')
 
 step = 0

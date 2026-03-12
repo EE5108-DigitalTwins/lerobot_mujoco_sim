@@ -1,16 +1,15 @@
 dataset:
-  repo_id: omy_pnp_language # Repository ID
+  repo_id: so101_pnp_language # Repository ID
   root: ./demo_data_language # Your root for data file!
 policy:
-  type : smolvla
+  type : pi0
   chunk_size: 5
   n_action_steps: 5
-  device: cuda
   
 save_checkpoint: true
-output_dir: ./ckpt/smolvla_omy # Save directory
+output_dir: ./ckpt/pi0_so101 # Save directory
 batch_size: 16
-job_name : smolvla_omy
+job_name : pi0_so101
 resume: false 
 seed : 42
 num_workers: 8
@@ -23,6 +22,6 @@ use_policy_training_preset: true
   
 wandb:
   enable: true
-  project: smolvla_omy
+  project: pi0_so101
   entity: <your_wandb_entity>
   disable_artifact: true

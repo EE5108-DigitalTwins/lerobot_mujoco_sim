@@ -24,7 +24,7 @@ import torchvision
 
 device = 'cuda'
 
-dataset_metadata = LeRobotDatasetMetadata("omy_pnp", root=str(PROJECT_ROOT / 'data' / 'demo_data'))
+dataset_metadata = LeRobotDatasetMetadata("so101_pnp", root=str(PROJECT_ROOT / 'data' / 'demo_data_so101'))
 features = dataset_to_policy_features(dataset_metadata.features)
 output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
 input_features = {key: ft for key, ft in features.items() if key not in output_features}
@@ -41,11 +41,11 @@ policy.to(device)
 # ## Load Environment
 
 from mujoco_env.y_env import SimpleEnv
-xml_path = str(PROJECT_ROOT / 'asset' / 'example_scene_y.xml')
+xml_path = str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml')
 PnPEnv = SimpleEnv(
     xml_path, 
     action_type='joint_angle',
-    mug_body_name='body_obj_redbull',
+    mug_body_name='body_obj_block_3',
     plate_body_name='body_obj_bin'
 )
 
@@ -83,7 +83,7 @@ while PnPEnv.env.is_viewer_alive():
             'observation.state': torch.tensor([state]).to(device),
             'observation.image': image.unsqueeze(0).to(device),
             'observation.wrist_image': wrist_image.unsqueeze(0).to(device),
-            'task': ['Put mug cup on the plate'],
+            'task': ['Put green block in the bin'],
             'timestamp': torch.tensor([step/20]).to(device)
         }
         # Select an action

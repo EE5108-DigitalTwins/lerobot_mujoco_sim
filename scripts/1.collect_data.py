@@ -35,17 +35,17 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 @dataclass
 class CollectConfig:
     seed: int | None = None
-    repo_name: str = 'omy_pnp'
+    repo_name: str = 'so101_pnp'
     num_demo: int = 1
-    root: str = str(Path(__file__).resolve().parent.parent / 'data' / 'demo_data')
-    task_name: str = 'Put red bull can in the bin'
-    xml_path: str = str(Path(__file__).resolve().parent.parent / 'asset' / 'example_scene_y.xml')
-    mug_body_name: str = 'body_obj_redbull'
+    root: str = str(Path(__file__).resolve().parent.parent / 'data' / 'demo_data_so101')
+    task_name: str = 'Put green block in the bin'
+    xml_path: str = str(Path(__file__).resolve().parent.parent / 'asset' / 'scene_so101_y.xml')
+    mug_body_name: str = 'body_obj_block_3'
     plate_body_name: str = 'body_obj_bin'
-    env_robot_profile: str = 'omy'
+    env_robot_profile: str = 'so101'
     offline_local_only: bool = True
     delete_existing_dataset: bool = False
-    robot_type: str = 'omy'
+    robot_type: str = 'so101'
     fps: int = 20
     image_size: int = 256
     image_writer_threads: int = 10
@@ -152,32 +152,41 @@ def parse_args():
 
 
 def resolve_robot_scene_defaults(config):
-    default_omy_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_y.xml')
-    so100_scene_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_so100_y.xml')
-    so101_scene_xml = str(PROJECT_ROOT / 'asset' / 'example_scene_so101_y.xml')
-    default_root = str(PROJECT_ROOT / 'data' / 'demo_data')
+    scene_by_profile = {
+        'omy': str(PROJECT_ROOT / 'asset' / 'scene_y.xml'),
+        'so100': str(PROJECT_ROOT / 'asset' / 'scene_so100_y.xml'),
+        'so101': str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml'),
+    }
+    root_by_profile = {
+        'omy': str(PROJECT_ROOT / 'data' / 'demo_data'),
+        'so100': str(PROJECT_ROOT / 'data' / 'demo_data_so100'),
+        'so101': str(PROJECT_ROOT / 'data' / 'demo_data_so101'),
+    }
 
     xml_norm = os.path.normpath(config.xml_path)
-    default_omy_norm = os.path.normpath(default_omy_xml)
-    is_default_omy_xml = (
-        xml_norm == default_omy_norm
-        or xml_norm.endswith(os.path.normpath(os.path.join('asset', 'example_scene_y.xml')))
+    default_xml_norms = {os.path.normpath(path) for path in scene_by_profile.values()}
+    default_xml_suffixes = {
+        os.path.normpath(os.path.join('asset', Path(path).name))
+        for path in scene_by_profile.values()
+    }
+    is_default_xml = (
+        xml_norm in default_xml_norms
+        or any(xml_norm.endswith(suffix) for suffix in default_xml_suffixes)
     )
+    if is_default_xml:
+        config.xml_path = scene_by_profile[config.env_robot_profile]
 
-    if config.env_robot_profile == 'so100' and is_default_omy_xml:
-        config.xml_path = so100_scene_xml
-    elif config.env_robot_profile == 'so101' and is_default_omy_xml:
-        config.xml_path = so101_scene_xml
-
-    if config.root in {'./demo_data', 'demo_data'}:
-        config.root = default_root
-    elif not os.path.isabs(config.root):
+    if not os.path.isabs(config.root):
         config.root = str((PROJECT_ROOT / config.root).resolve())
 
-    if config.root == default_root and config.env_robot_profile == 'so100':
-        config.root = str(PROJECT_ROOT / 'data' / 'demo_data_so100')
-    elif config.root == default_root and config.env_robot_profile == 'so101':
-        config.root = str(PROJECT_ROOT / 'data' / 'demo_data_so101')
+    default_root_norms = {os.path.normpath(path) for path in root_by_profile.values()}
+    legacy_root_norms = {
+        os.path.normpath('./demo_data'),
+        os.path.normpath('demo_data'),
+    }
+    root_norm = os.path.normpath(config.root)
+    if root_norm in default_root_norms or root_norm in legacy_root_norms:
+        config.root = root_by_profile[config.env_robot_profile]
 
     return config
 

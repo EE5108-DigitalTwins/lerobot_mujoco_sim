@@ -17,7 +17,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatas
 import numpy as np
 from lerobot.common.datasets.utils import write_json, serialize_dict
 
-dataset = LeRobotDataset('omy_pnp', root=str(PROJECT_ROOT / 'data' / 'demo_data'))  # if you want to use the example data provided, root = PROJECT_ROOT / 'data' / 'demo_data_example' instead!
+dataset = LeRobotDataset('so101_pnp', root=str(PROJECT_ROOT / 'data' / 'demo_data_so101'))  # if you want to use the example data provided, root = PROJECT_ROOT / 'data' / 'demo_data_example' instead!
 
 # ## Load Dataset
 
@@ -53,11 +53,11 @@ dataloader = torch.utils.data.DataLoader(
 # ## Visualize your Dataset on Simulation
 
 from mujoco_env.y_env import SimpleEnv
-xml_path = str(PROJECT_ROOT / 'asset' / 'example_scene_y.xml')
+xml_path = str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml')
 PnPEnv = SimpleEnv(
     xml_path, 
     action_type='joint_angle',
-    mug_body_name='body_obj_redbull',
+    mug_body_name='body_obj_block_3',
     plate_body_name='body_obj_bin'
 )
 

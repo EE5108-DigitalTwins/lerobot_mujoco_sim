@@ -11,7 +11,7 @@
     </default>
     <default class="gripper">
       <joint armature="0.1" damping="10.0"/>
-      <position kp="1000" forcerange="-100 100"/>
+      <position kp="200" forcerange="-20 20"/>
     </default>
   </default>
 
@@ -59,8 +59,8 @@
                 <geom type="mesh" rgba="0.2 0.2 0.2 1" mesh="link6"/>
                 <geom pos="0 -0.103 0" quat="1 0 0 0" type="mesh" rgba="0.2 0.2 0.2 1" mesh="flange"/>
                 <geom pos="0 -0.109 0" quat="0.500398 0.5 0.5 -0.499602" type="mesh" mesh="base"/>
-                <!-- Camera center -->
-                <body name="camera_center" pos="0.0 -0.09 0.1">
+                <!-- Camera mounted above wrist -->
+                <body name="camera_center" pos="0.0 -0.13 0.16">
                     <geom size="0.005 0.005 0.005" pos="0. 0. 0."
                         contype="0" conaffinity="0"
                         type="box" rgba="1.00 0.00 0.0 0" />
@@ -72,21 +72,23 @@
                 <body name="rh_p12_rn_r1" pos="0.00803822 -0.156994 6.40105e-06" quat="0.500398 0.5 0.5 -0.499602">
                   <inertial pos="0 0.034 0.004" mass="0.068" diaginertia="1e-06 1e-06 1e-06"/>
                   <joint name="rh_r1" pos="0 0 0" axis="1 0 0" range="0 1.1" class="gripper"/>
-                  <geom type="mesh" mesh="r1"/>
+                  <geom type="mesh" mesh="r1" contype="0" conaffinity="0"/>
                   <body name="rh_p12_rn_r2" pos="0 0.0493634 0.0285">
                     <inertial pos="0 0.006 0.011" mass="0.022" diaginertia="1e-06 1e-06 1e-06"/>
                     <joint name="rh_r2" pos="0 0 0" axis="-1 0 0" range="0 1" class="gripper"/>
-                    <geom type="mesh" mesh="r2"/>
+                    <geom type="mesh" mesh="r2" contype="0" conaffinity="0"/>
+                    <geom type="box" pos="-0.0085 0.007 0.0125" size="0.0035 0.009 0.011" margin="0" gap="0" contype="1" conaffinity="1" condim="4" friction="3.0 0.01 0.002" solref="0.01 1" solimp="0.9 0.97 0.01"/>
                   </body>
                 </body>
                 <body name="rh_p12_rn_l1" pos="-0.00796177 -0.157006 -6.34017e-06" quat="0.500398 0.5 0.5 -0.499602">
                   <inertial pos="0 -0.034 0.004" mass="0.068" diaginertia="1e-06 1e-06 1e-06"/>
                   <joint name="rh_l1" pos="0 0 0" axis="-1 0 0" range="0 1.1" class="gripper"/>
-                  <geom type="mesh" mesh="l1"/>
+                  <geom type="mesh" mesh="l1" contype="0" conaffinity="0"/>
                   <body name="rh_p12_rn_l2" pos="0 -0.0493634 0.0285">
                     <inertial pos="0 -0.006 0.011" mass="0.022" diaginertia="1e-06 1e-06 1e-06"/>
                     <joint name="rh_l2" pos="0 0 0" axis="1 0 0" range="0 1" class="gripper"/>
-                    <geom type="mesh" mesh="l2"/>
+                    <geom type="mesh" mesh="l2" contype="0" conaffinity="0"/>
+                    <geom type="box" pos="0.0085 -0.007 0.0125" size="0.0035 0.009 0.011" margin="0" gap="0" contype="1" conaffinity="1" condim="4" friction="3.0 0.01 0.002" solref="0.01 1" solimp="0.9 0.97 0.01"/>
                   </body>
                 </body>
               </body>
@@ -111,10 +113,10 @@
     <position name="actuator_joint5" joint="joint5" class="Y"/>
     <position name="actuator_joint6" joint="joint6" class="Y"/>
 
-    <position name="actuator_rh_r1" joint="rh_r1" ctrlrange="0.000 1.100" class="gripper" kp="500"/>
-    <position name="actuator_rh_r2" joint="rh_r2" ctrlrange="0.000 1.000" class="gripper" kp="500"/>
-    <position name="actuator_rh_l1" joint="rh_l1" ctrlrange="0.000 1.100" class="gripper" kp="500"/>
-    <position name="actuator_rh_l2" joint="rh_l2" ctrlrange="0.000 1.000" class="gripper" kp="500"/>
+    <position name="actuator_rh_r1" joint="rh_r1" ctrlrange="0.000 1.100" class="gripper" kp="200"/>
+    <position name="actuator_rh_r2" joint="rh_r2" ctrlrange="0.000 1.000" class="gripper" kp="200"/>
+    <position name="actuator_rh_l1" joint="rh_l1" ctrlrange="0.000 1.100" class="gripper" kp="200"/>
+    <position name="actuator_rh_l2" joint="rh_l2" ctrlrange="0.000 1.000" class="gripper" kp="200"/>
   </actuator>
 
 </mujoco>

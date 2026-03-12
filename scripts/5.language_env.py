@@ -32,7 +32,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 SEED = 0
 # SEED = None  # Uncomment this line to randomize the object positions
 
-REPO_NAME = 'omy_pnp_language'
+REPO_NAME = 'so101_pnp_language'
 NUM_DEMO = 20  # Number of demonstrations to collect
 ROOT = str(PROJECT_ROOT / 'data' / 'demo_data_language')  # The root directory to save the demonstrations
 
@@ -43,7 +43,7 @@ ROOT = str(PROJECT_ROOT / 'data' / 'demo_data_language')  # The root directory t
 # - Use the <body name="..."> value (e.g. body_obj_mug_6).
 # - Do the same for both mug body names and the plate body name.
 
-xml_path = str(PROJECT_ROOT / 'asset' / 'example_scene_y2.xml')
+xml_path = str(PROJECT_ROOT / 'asset' / 'scene_y2.xml')
 
 # Choose object body names from the object XML files included in your scene.
 # Examples:
@@ -79,7 +79,7 @@ if create_new:
     dataset = LeRobotDataset.create(
                 repo_id=REPO_NAME,
                 root=ROOT,
-                robot_type="omy",
+                robot_type="so101",
                 fps=20,  # 20 frames per second
                 features={
                     "observation.image": {

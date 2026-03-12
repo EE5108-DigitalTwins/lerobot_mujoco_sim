@@ -16,7 +16,7 @@ class SimpleEnv:
                  xml_path,
                 action_type='eef_pose', 
                 state_type='joint_angle',
-                robot_profile='omy',
+                robot_profile='so101',
                 seed = None,
                 mug_body_name='body_obj_mug_5',
                 plate_body_name='body_obj_plate_11',

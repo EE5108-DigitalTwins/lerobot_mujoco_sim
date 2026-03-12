@@ -9,23 +9,23 @@
 
 # ## [Optional] Download Dataset
 # If you want to use the collected dataset, please download it from Hugging Face.
-# !git clone https://huggingface.co/datasets/Jeongeun/omy_pnp_language
+# !git clone https://huggingface.co/datasets/Jeongeun/so101_pnp_language
 
-# ## Step 1. Change the configuration file, pi0_omy.yaml
+# ## Step 1. Change the configuration file, pi0_so101.yaml
 #
-# pi0_omy.yaml file:
+# pi0_so101.yaml file:
 #
 # dataset:
-#   repo_id: omy_pnp
-#   root: ./omy_pnp
+#   repo_id: so101_pnp
+#   root: ./so101_pnp
 # policy:
 #   type : pi0
 #   chunk_size: 5
 #   n_action_steps: 5
 # save_checkpoint: true
-# output_dir: ../checkpoints/pi0_omy
+# output_dir: ../checkpoints/pi0_so101
 # batch_size: 16
-# job_name : pi0_omy
+# job_name : pi0_so101
 # resume: false
 # seed : 42
 # num_workers: 8
@@ -38,13 +38,13 @@
 #
 # wandb:
 #   enable: true
-#   project: pi0_omy
+#   project: pi0_so101
 #   entity: <YOUR ENTITY for wandb>
 #   disable_artifact: true
 
 # ## Step 2. Train Model.
 # The code is tested on A100
-# Run: python train_model.py --config_path pi0_omy.yaml
+# Run: python train_model.py --config_path pi0_so101.yaml
 
 # ## Step 3. Deploy
 
@@ -69,9 +69,9 @@ import torchvision
 device = 'cuda'
 
 try:
-    dataset_metadata = LeRobotDatasetMetadata("omy_pnp_language", root=str(PROJECT_ROOT / 'data' / 'demo_data_language'))
+    dataset_metadata = LeRobotDatasetMetadata("so101_pnp_language", root=str(PROJECT_ROOT / 'data' / 'demo_data_language'))
 except:
-    dataset_metadata = LeRobotDatasetMetadata("omy_pnp_language", root='./omy_pnp_language')
+    dataset_metadata = LeRobotDatasetMetadata("so101_pnp_language", root='./so101_pnp_language')
 features = dataset_to_policy_features(dataset_metadata.features)
 output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
 input_features = {key: ft for key, ft in features.items() if key not in output_features}
@@ -82,15 +82,15 @@ cfg = PI0Config(input_features=input_features, output_features=output_features, 
 delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
 
 # We can now instantiate our policy with this config and the dataset stats.
-policy = PI0Policy.from_pretrained(str(PROJECT_ROOT / 'checkpoints' / 'pi0_omy' / 'checkpoints' / 'last' / 'pretrained_model'), dataset_stats=dataset_metadata.stats)
+policy = PI0Policy.from_pretrained(str(PROJECT_ROOT / 'checkpoints' / 'pi0_so101' / 'checkpoints' / 'last' / 'pretrained_model'), dataset_stats=dataset_metadata.stats)
 # You can load the trained policy from hub if you don't have the resources to train it.
-# policy = PI0Policy.from_pretrained("Jeongeun/omy_pnp_pi0", config=cfg, dataset_stats=dataset_metadata.stats)
+# policy = PI0Policy.from_pretrained("Jeongeun/so101_pnp_pi0", config=cfg, dataset_stats=dataset_metadata.stats)
 policy.to(device)
 
 # ### Deploy Policy
 
 from mujoco_env.y_env2 import SimpleEnv2
-xml_path = str(PROJECT_ROOT / 'asset' / 'example_scene_y2.xml')
+xml_path = str(PROJECT_ROOT / 'asset' / 'scene_y2.xml')
 PnPEnv = SimpleEnv2(xml_path, action_type='joint_angle')
 
 from torchvision import transforms
@@ -152,6 +152,6 @@ while PnPEnv.env.is_viewer_alive():
 
 # [Optional] Push policy to Hugging Face Hub
 # policy.push_to_hub(
-#     repo_id='Jeongeun/omy_pnp_pi0',
+#     repo_id='Jeongeun/so101_pnp_pi0',
 #     commit_message='Add trained policy for PnP task',
 # )

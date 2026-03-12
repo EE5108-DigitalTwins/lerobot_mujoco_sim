@@ -32,7 +32,7 @@ log_freq = 100
 # creating the policy:
 #   - input/output shapes: to properly size the policy
 #   - dataset stats: for normalization and denormalization of input/outputs
-dataset_metadata = LeRobotDatasetMetadata("omy_pnp", root=str(PROJECT_ROOT / 'data' / 'demo_data'))
+dataset_metadata = LeRobotDatasetMetadata("so101_pnp", root=str(PROJECT_ROOT / 'data' / 'demo_data_so101'))
 features = dataset_to_policy_features(dataset_metadata.features)
 output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
 input_features = {key: ft for key, ft in features.items() if key not in output_features}
@@ -74,7 +74,7 @@ transform = transforms.Compose([
 ])
 
 # We can then instantiate the dataset with these delta_timestamps configuration.
-dataset = LeRobotDataset("omy_pnp", delta_timestamps=delta_timestamps, root=str(PROJECT_ROOT / 'data' / 'demo_data'), image_transforms=transform)
+dataset = LeRobotDataset("so101_pnp", delta_timestamps=delta_timestamps, root=str(PROJECT_ROOT / 'data' / 'demo_data_so101'), image_transforms=transform)
 
 # Then we create our optimizer and dataloader for offline training.
 optimizer = torch.optim.Adam(policy.parameters(), lr=1e-4)

@@ -1,15 +1,15 @@
 seed: null
-repo_name: omy_pnp
+repo_name: so101_pnp
 num_demo: 1
-root: ./demo_data
-task_name: Put red bull can in the bin
-xml_path: ./asset/example_scene_y.xml
-mug_body_name: body_obj_redbull
+root: ./demo_data_so101
+task_name: Put green block in the bin
+xml_path: ./asset/scene_so101_y.xml
+mug_body_name: body_obj_block_3
 plate_body_name: body_obj_bin
-env_robot_profile: omy
+env_robot_profile: so101
 offline_local_only: true
 delete_existing_dataset: false
-robot_type: omy
+robot_type: so101
 fps: 20
 image_size: 256
 image_writer_threads: 10
