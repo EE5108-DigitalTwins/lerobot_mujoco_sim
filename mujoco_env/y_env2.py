@@ -3,7 +3,7 @@ import random
 import numpy as np
 import xml.etree.ElementTree as ET
 from mujoco_env.mujoco_parser import MuJoCoParserClass
-from mujoco_env.utils import prettify, sample_xyzs, rotation_matrix, add_title_to_img
+from mujoco_env.utils import prettify, rotation_matrix, add_title_to_img
 from mujoco_env.ik import solve_ik
 from mujoco_env.transforms import rpy2r, r2rpy
 import os
@@ -18,7 +18,13 @@ class SimpleEnv2:
                 seed = None,
                 mug_red_body_name='body_obj_mug_5',
                 mug_blue_body_name='body_obj_mug_6',
-                plate_body_name='body_obj_plate_11'):
+                plate_body_name='body_obj_plate_11',
+                spawn_x_range=(0.25, 0.52),
+                spawn_y_range=(0.02, 0.22),
+                spawn_z_range=(0.815, 0.815),
+                spawn_min_dist=0.2,
+                spawn_xy_margin=0.0,
+                spawn_fallback_min_dist=0.1):
         """
         args:
             xml_path: str, path to the xml file
@@ -36,6 +42,14 @@ class SimpleEnv2:
         self.mug_red_body_name = mug_red_body_name
         self.mug_blue_body_name = mug_blue_body_name
         self.plate_body_name = plate_body_name
+        self.spawn_x_range = spawn_x_range
+        self.spawn_y_range = spawn_y_range
+        self.spawn_z_range = spawn_z_range
+        self.spawn_min_dist = spawn_min_dist
+        self.spawn_xy_margin = spawn_xy_margin
+        self.spawn_fallback_min_dist = spawn_fallback_min_dist
+        self.spawn_bin_exclusion_margin = 0.015
+        self.spawn_reach_radius = 0.50
 
         self.joint_names = ['joint1',
                     'joint2',
@@ -66,6 +80,81 @@ class SimpleEnv2:
         was_down = self._prev_key_state.get(key, False)
         self._prev_key_state[key] = is_down
         return is_down and not was_down
+
+    def _get_bin_exclusion_bounds(self):
+        """
+        Return a rectangular XY exclusion zone for the fixed bin.
+        """
+        try:
+            body_names = self.env.get_body_names(prefix='body_obj_')
+            if 'body_obj_bin' not in body_names:
+                return None
+            p_bin = self.env.get_p_body('body_obj_bin')
+        except Exception:
+            return None
+
+        half_extent = 0.06 + self.spawn_bin_exclusion_margin
+        return (
+            p_bin[0] - half_extent,
+            p_bin[0] + half_extent,
+            p_bin[1] - half_extent,
+            p_bin[1] + half_extent,
+        )
+
+    def _is_within_reach_xy(self, x, y):
+        """
+        Check whether an XY point is inside a conservative SO101 reachable area.
+        """
+        try:
+            p_base = self.env.get_p_body('base')
+        except Exception:
+            return True
+        d_xy = np.linalg.norm(np.array([x - p_base[0], y - p_base[1]], dtype=np.float32))
+        return bool(d_xy <= self.spawn_reach_radius)
+
+    def _sample_object_xyzs(self, n_obj, min_dist):
+        """
+        Sample object positions while respecting reachability and bin exclusion.
+        """
+        x_min, x_max = self.spawn_x_range
+        y_min, y_max = self.spawn_y_range
+        z_min, z_max = self.spawn_z_range
+        m = self.spawn_xy_margin
+        x_lo, x_hi = x_min + m, x_max - m
+        y_lo, y_hi = y_min + m, y_max - m
+        if x_lo > x_hi or y_lo > y_hi:
+            raise ValueError("spawn_xy_margin is too large for the configured spawn range.")
+
+        bin_bounds = self._get_bin_exclusion_bounds()
+        xyzs = []
+        max_attempts = 5000
+        attempts = 0
+        while len(xyzs) < n_obj and attempts < max_attempts:
+            attempts += 1
+            x = np.random.uniform(x_lo, x_hi)
+            y = np.random.uniform(y_lo, y_hi)
+            z = np.random.uniform(z_min, z_max)
+            cand = np.array([x, y, z], dtype=np.float32)
+
+            if not self._is_within_reach_xy(x, y):
+                continue
+
+            if bin_bounds is not None:
+                bx0, bx1, by0, by1 = bin_bounds
+                if (bx0 <= x <= bx1) and (by0 <= y <= by1):
+                    continue
+
+            if any(np.linalg.norm(cand - other) < min_dist for other in xyzs):
+                continue
+
+            xyzs.append(cand)
+
+        if len(xyzs) != n_obj:
+            raise ValueError(
+                f"Could not sample {n_obj} objects within constrained spawn region "
+                f"after {max_attempts} attempts."
+            )
+        return np.stack(xyzs, axis=0)
 
     def _teleop_debug_status(self):
         key_map = {
@@ -102,13 +191,21 @@ class SimpleEnv2:
         Initialize the viewer
         '''
         self.env.reset()
+        try:
+            p_base = self.env.get_p_body('base')
+            p_tcp = self.env.get_p_body('tcp_link')
+            lookat = 0.5 * (p_base + p_tcp)
+        except Exception:
+            lookat = np.array([0.25, 0.0, 0.95], dtype=np.float32)
         self.env.init_viewer(
-            distance          = 2.0,
-            elevation         = -30, 
-            transparent       = False,
-            black_sky         = True,
-            use_rgb_overlay = False,
-            loc_rgb_overlay = 'top right',
+            distance=0.5,
+            azimuth=180,
+            elevation=-20,
+            lookat=lookat,
+            transparent=False,
+            black_sky=True,
+            use_rgb_overlay=False,
+            loc_rgb_overlay='top right',
         )
     def reset(self, seed = None):
         '''
@@ -132,27 +229,19 @@ class SimpleEnv2:
         plate_xyz = np.array([0.3, -0.25, 0.82])
         self.env.set_p_base_body(body_name=self.plate_body_name,p=plate_xyz)
         self.env.set_R_base_body(body_name=self.plate_body_name,R=np.eye(3,3))
-        # Set object positions
-        obj_xyzs = sample_xyzs(
-            1,
-            x_range   = [+0.32,+0.33],
-            y_range   = [-0.00,+0.02],
-            z_range   = [0.83,0.83],
-            min_dist  = 0.16,
-            xy_margin = 0.0
-        )
-        self.env.set_p_base_body(body_name=self.mug_red_body_name,p=obj_xyzs[0,:])
-        self.env.set_R_base_body(body_name=self.mug_red_body_name,R=np.eye(3,3))
-        obj_xyzs = sample_xyzs(
-            1,
-            x_range   = [+0.29,+0.3],
-            y_range   = [0.19,+0.21],
-            z_range   = [0.83,0.83],
-            min_dist  = 0.16,
-            xy_margin = 0.0
-        )
-        self.env.set_p_base_body(body_name=self.mug_blue_body_name,p=obj_xyzs[0,:])
-        self.env.set_R_base_body(body_name=self.mug_blue_body_name,R=np.eye(3,3))
+        # Set object positions with constrained spawn sampling.
+        try:
+            obj_xyzs = self._sample_object_xyzs(n_obj=2, min_dist=self.spawn_min_dist)
+        except ValueError as exc:
+            fallback_min_dist = self.spawn_fallback_min_dist
+            print(f"[SimpleEnv2.reset] object sampling failed: {exc}")
+            print(f"[SimpleEnv2.reset] retrying with min_dist={fallback_min_dist}")
+            obj_xyzs = self._sample_object_xyzs(n_obj=2, min_dist=fallback_min_dist)
+
+        self.env.set_p_base_body(body_name=self.mug_red_body_name, p=obj_xyzs[0, :])
+        self.env.set_R_base_body(body_name=self.mug_red_body_name, R=np.eye(3, 3))
+        self.env.set_p_base_body(body_name=self.mug_blue_body_name, p=obj_xyzs[1, :])
+        self.env.set_R_base_body(body_name=self.mug_blue_body_name, R=np.eye(3, 3))
         self.env.forward(increase_tick=False)
 
         # Set the initial pose of the robot
@@ -217,6 +306,7 @@ class SimpleEnv2:
                 ik_th              = np.radians(5.0),
                 render             = False,
                 verbose_warning    = False,
+                restore_state      = False,
             )
         elif self.action_type == 'delta_joint_angle':
             q = action[:-1] + self.last_q
@@ -248,13 +338,14 @@ class SimpleEnv2:
         '''
         grab images from the environment
         returns:
-            rgb_agent: np.array, rgb image from the agent's view
-            rgb_ego: np.array, rgb image from the egocentric
+            rgb_agent: np.array, rgb image from the top view
+            rgb_aux: np.array, compatibility secondary image (same as top view)
         '''
         self.rgb_agent = self.env.get_fixed_cam_rgb(
-            cam_name='agentview')
-        self.rgb_ego = self.env.get_fixed_cam_rgb(
-            cam_name='egocentric')
+            cam_name='topview')
+        # Egocentric camera was removed from the SO101 scene. Keep a secondary
+        # return image for backward compatibility with existing scripts.
+        self.rgb_ego = self.rgb_agent.copy()
         # self.rgb_top = self.env.get_fixed_cam_rgbd_pcd(
         #     cam_name='topview')
         self.rgb_side = self.env.get_fixed_cam_rgb(
@@ -271,16 +362,14 @@ class SimpleEnv2:
         R_current = R_current @ np.array([[1,0,0],[0,0,1],[0,1,0 ]])
         self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
         self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
-        rgb_egocentric_view = add_title_to_img(self.rgb_ego,text='Egocentric View',shape=(640,480))
-        rgb_agent_view = add_title_to_img(self.rgb_agent,text='Agent View',shape=(640,480))
+        rgb_agent_view = add_title_to_img(self.rgb_agent,text='Top View',shape=(640,480))
         self.env.plot_T(p = np.array([0.1,0.0,1.0]), label=f"Episode {idx}", plot_axis=False, plot_sphere=False)
         self.env.viewer_rgb_overlay(rgb_agent_view,loc='top right')
-        self.env.viewer_rgb_overlay(rgb_egocentric_view,loc='bottom right')
         if teleop:
             rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
             self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
-            self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
-            self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
+            self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list(as_text=True)))
+            self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list(as_text=True)))
             focused, active_keys = self._teleop_debug_status()
             self.env.viewer_text_overlay(text1='Window Focus', text2='YES' if focused else 'NO (click viewer)')
             self.env.viewer_text_overlay(text1='Active Keys (raw)', text2='%s' % active_keys)
@@ -388,17 +477,61 @@ class SimpleEnv2:
 
     def check_success(self):
         '''
-        ['body_obj_mug_5', 'body_obj_plate_11']
-        Check if the mug is placed on the plate
-        + Gripper should be open and move upward above 0.9
+        Check task completion for language-conditioned episodes.
+
+        If the target body is a bin (name contains "bin"), apply the same
+        strict SO101 bin logic used in y_env.py:
+          1) object center must be inside bin inner XY bounds
+          2) object center Z must be inside bin cavity bounds
+          3) gripper must be open
+
+        Otherwise (legacy plate task), require close XY/Z alignment to plate,
+        gripper open, and arm retracted upward.
         '''
-        p_mug = self.env.get_p_body(self.obj_target)
-        p_plate = self.env.get_p_body(self.plate_body_name)
-        if np.linalg.norm(p_mug[:2] - p_plate[:2]) < 0.1 and np.linalg.norm(p_mug[2] - p_plate[2]) < 0.6 and self.env.get_qpos_joint('rh_r1') < 0.1:
-            p = self.env.get_p_body('tcp_link')[2]
-            if p > 0.9:
-                return True
-        return False
+        p_obj = self.env.get_p_body(self.obj_target)
+        p_tgt = self.env.get_p_body(self.plate_body_name)
+        gripper_open = float(self.env.get_qpos_joint('rh_r1')[0]) < 0.1
+
+        # Support bin tasks in language env with strict "drop-in-bin only" criteria.
+        if 'bin' in self.plate_body_name.lower():
+            inner_half_extent = 0.048
+            block_half_size = 0.0125
+            floor_top = p_tgt[2] + 0.012
+            wall_top = p_tgt[2] + 0.076
+
+            dx = abs(p_obj[0] - p_tgt[0])
+            dy = abs(p_obj[1] - p_tgt[1])
+            xy_ok = (dx < (inner_half_extent - 0.003)) and (dy < (inner_half_extent - 0.003))
+
+            z_min = floor_top + block_half_size - 0.003
+            z_max = wall_top + 0.005
+            z_ok = (p_obj[2] > z_min) and (p_obj[2] < z_max)
+
+            contact_pairs = self.env.get_contact_body_names()
+
+            def _has_contact(body_a, body_b):
+                for c1, c2 in contact_pairs:
+                    if (c1 == body_a and c2 == body_b) or (c1 == body_b and c2 == body_a):
+                        return True
+                return False
+
+            block_bin_contact = _has_contact(self.obj_target, self.plate_body_name)
+            # OMY gripper finger bodies in this env:
+            # - rh_p12_rn_r1 / rh_p12_rn_r2
+            # - rh_p12_rn_l1 / rh_p12_rn_l2
+            block_gripper_contact = any(
+                _has_contact(self.obj_target, body_name)
+                for body_name in ['rh_p12_rn_r1', 'rh_p12_rn_r2', 'rh_p12_rn_l1', 'rh_p12_rn_l2']
+            )
+
+            return bool(xy_ok and z_ok and gripper_open and block_bin_contact and not block_gripper_contact)
+
+        # Legacy plate-placement logic for mug tasks.
+        xy_ok = np.linalg.norm(p_obj[:2] - p_tgt[:2]) < 0.10
+        z_ok = abs(p_obj[2] - p_tgt[2]) < 0.08
+        if not (xy_ok and z_ok and gripper_open):
+            return False
+        return bool(self.env.get_p_body('tcp_link')[2] > 0.9)
     
     def get_obj_pose(self):
         '''

@@ -41,31 +41,35 @@ lerobot-mujoco-tutorial/
 │   ├── 7.pi0.ipynb
 │   └── 8.smolvla.ipynb
 ├── scripts/             # Python scripts
-│   ├── collect_data.py
-│   ├── visualize_data.py
-│   ├── train.py
-│   ├── deploy.py
-│   ├── language_env.py
-│   ├── visualize_data_language.py
-│   ├── pi0_deploy.py
-│   └── smolvla_deploy.py
+│   ├── 1.collect_data.py
+│   ├── 1.scripted_demo.py      # NEW: Automated demo generation
+│   ├── 2.visualize_data.py
+│   ├── 3.train.py
+│   ├── 4.deploy.py
+│   ├── 5.language_env.py
+│   ├── 6.visualize_data_language.py
+│   ├── 7.pi0_deploy.py
+│   ├── 8.smolvla_deploy.py
+│   └── train_model.py
 └── third_party/        # Third-party code
     └── SO-ARM100/
 ```
 
 ## Table of Contents
-- [:pencil: Installation](#installation)
-- [:mega: Updates and Plans](#updates--plans)
-- [:video_game: 1. Collect Demonstration Data](#1-collect-demonstration-data)
-- [:movie_camera: 2. Playback Your Data](#2-playback-your-data)
-- [:fire: 3. Train Action-Chunking-Transformer (ACT)](#3-train-action-chunking-transformer-act)
-- [:pushpin: 4. Deploy ACT](#4-deploy-your-policy)
-- [:floppy_disk: 5-6. Language conditioned Environment.](#5-6-collect-data-and-visualize-in-lanugage-conditioned-environment)
-- [🤗 Models and Dataset](#models-and-dataset-)
-- [:zap:7.Train and deploy pi_0](#7-train-and-deploy-pi_0)
-- [:bulb:8.Train and deploy smolvla](#8-train-and-deploy-smolvla)
-- [:pencil: Acknowledgements](#acknowledgements)
-- [:page_facing_up: License](#license)
+- [Installation](#installation)
+- [Updates and Plans](#updates--plans)
+- [Recent Changes](#recent-changes)
+- [1. Collect Demonstration Data](#1-collect-demonstration-data)
+- [1b. Scripted Demonstration Generation](#1b-scripted-demonstration-generation)
+- [2. Playback Your Data](#2-playback-your-data)
+- [3. Train Action-Chunking-Transformer (ACT)](#3-train-action-chunking-transformer-act)
+- [4. Deploy ACT](#4-deploy-your-policy)
+- [5-6. Language conditioned Environment.](#5-6-collect-data-and-visualize-in-lanugage-conditioned-environment)
+- [Models and Dataset](#models-and-dataset-)
+- [7.Train and deploy pi_0](#7-train-and-deploy-pi_0)
+- [8.Train and deploy smolvla](#8-train-and-deploy-smolvla)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
 
 ## Installation
 We have tested our environment on python 3.10. 
@@ -115,6 +119,40 @@ xml_path = './asset/so_arm100/SO101/so101_new_calib.xml'   # From notebooks/
 
 :white_check_mark: Add SmolVLA
 
+:white_check_mark: Add scripted demonstration generation (FSM-based controller)
+
+## Recent Changes
+
+This workspace has undergone significant improvements to enhance simulation reliability and data collection:
+
+### Environment Enhancements
+- **Improved object spawning**: Added bin exclusion zones and reachability checks to prevent objects from spawning in unreachable locations or inside the target bin
+- **Pick-and-place gating**: Success now requires the object to be lifted off the table before placement, preventing false positives
+- **Configurable spawn bounds**: Updated default spawn ranges to match SO-101 arm reachability (`spawn_x_range: [0.25, 0.52]`, `spawn_y_range: [0.02, 0.22]`)
+- **Enhanced success detection**: Added height-based checks relative to bin geometry for more reliable task completion verification
+
+### New Features
+- **Scripted demonstration generator** (`scripts/1.scripted_demo.py`): Fully automated FSM-based pick-and-place controller for generating large-scale demonstration datasets without manual teleoperation
+  - IK-based waypoint planning with error checking
+  - 8-phase motion sequence (approach → descend → grasp → lift → transport → place → release → retract)
+  - Automatic retry on IK failures or task failures
+  - Configurable motion parameters and spawn bounds
+  - Output compatible with existing training pipeline
+
+### Asset and Scene Updates
+- **Updated MuJoCo scenes**: Refined block and bin geometries for more reliable grasping and placement
+- **Improved collision handling**: Enhanced object meshes and collision geometries in `asset/tabletop/object/`
+- **Calibrated SO-101 arm**: Updated `asset/so_arm100/SO101/so101_new_calib.xml` with improved joint limits and damping
+
+### Configuration Changes
+- **Updated spawn defaults**: All configs now use validated spawn bounds that match robot workspace
+- **Dataset organization**: Default data paths moved to `./data/` subdirectory for better organization
+
+### Code Quality
+- **Mouse control improvements**: Enhanced viewer interaction in `mujoco_parser.py`
+- **Robust state management**: Better tracking of gripper states and object positions
+- **Error handling**: Improved IK convergence checking and fallback strategies
+
 ## Running Scripts vs Notebooks
 
 ## Arm Profiles and Defaults
@@ -127,7 +165,11 @@ The project supports multiple robot arm profiles:
 By default, data collection loads the SO101 scene/profile from [configs/collect_data.yaml](configs/collect_data.yaml):
 - `env_robot_profile: so101`
 - `xml_path: ./asset/scene_so101_y.xml`
-- `root: ./demo_data_so101`
+- `root: ./data/demo_data_so101`
+- Spawn bounds (calibrated for SO-101 reachability):
+  - `spawn_x_range: [0.25, 0.52]` m
+  - `spawn_y_range: [0.02, 0.22]` m
+  - `spawn_z_range: [0.815, 0.815]` m
 
 You can switch profiles at runtime with:
 ```bash
@@ -142,9 +184,11 @@ You can use either the Python scripts in `scripts/` or the Jupyter notebooks in 
 **Python Scripts:**
 ```bash
 cd scripts
-python collect_data.py
-python train.py
-python deploy.py
+python 1.collect_data.py
+python 1.scripted_demo.py --num-demo 100  # Automated generation
+python 2.visualize_data.py
+python 3.train.py
+python 4.deploy.py
 ```
 
 **Jupyter Notebooks:**
@@ -157,11 +201,11 @@ jupyter notebook notebooks/
 Run [notebooks/1.collect_data.ipynb](notebooks/1.collect_data.ipynb) or use the script:
 ```bash
 cd scripts
-python collect_data.py
+python 1.collect_data.py
 ```
 
 Collect demonstration data for the given environment.
-The task is to pick a mug and place it on the plate. The environment recognizes the success if the mug is on the plate, gthe ripper opened, and the end-effector positioned above the mug.
+The task is to pick a mug and place it on the plate. The environment recognizes the success if the mug is on the plate, the gripper opened, and the end-effector positioned above the mug.
 
 **Default Scene Configuration:**
 The default scene `asset/scene_so101_y.xml` uses:
@@ -169,11 +213,19 @@ The default scene `asset/scene_so101_y.xml` uses:
 - Target location: `body_obj_bin` (bin)
 - Task: "Put green block in the bin"
 
+**Spawn Configuration:**
+The spawn bounds have been calibrated for SO-101 reachability:
+- X range: `[0.25, 0.52]` m (forward reach from robot base)
+- Y range: `[0.02, 0.22]` m (lateral reach)
+- Z range: `[0.815, 0.815]` m (table surface height)
+- Minimum distance between objects: `0.2` m
+- Automatic bin exclusion: Objects won't spawn inside or too close to the target bin
+
 If using a custom scene, update the `mug_body_name` and `plate_body_name` parameters accordingly.
 
 <img src="./media/teleop.gif" width="480" height="360">
 
-Use WASD for the xy plane, RF for the z-axis, QE for tilt, and ARROWs for the rest of rthe otations. 
+Use WASD for the xy plane, RF for the z-axis, QE for tilt, and ARROWs for the rest of the rotations. 
 
 SPACEBAR will change your gripper's state, and Z key will reset your environment with discarding the current episode data.
 
@@ -182,6 +234,64 @@ For overlayed images,
 - Bottom Right: Egocentric View
 - Top Left: Left Side View
 - Bottom Left: Top View
+
+## 1b. Scripted Demonstration Generation
+
+For generating large-scale demonstration datasets automatically, use the scripted FSM controller:
+
+```bash
+cd scripts
+python 1.scripted_demo.py --num-demo 100
+```
+
+This script uses a Finite State Machine (FSM) controller with IK-based waypoint planning to generate demonstrations programmatically. The output format is identical to manual teleoperation data, so the same training pipeline works without modification.
+
+**Key Features:**
+- Fully automated pick-and-place execution
+- 8-phase motion sequence: approach → descend → grasp → lift → transport → place → release → retract
+- Automatic IK solving with error checking and retry logic
+- Configurable motion parameters and spawn bounds
+- Success verification before saving episodes
+- Option to disable rendering for faster generation
+
+**Common Usage Examples:**
+
+```bash
+# Generate 100 demonstrations with visualization
+python 1.scripted_demo.py --num-demo 100
+
+# Fast generation without rendering (for large datasets)
+python 1.scripted_demo.py --num-demo 1000 --no-render --seed 42
+
+# Adjust motion timing for smoother/faster trajectories
+python 1.scripted_demo.py --num-demo 50 --steps-per-phase 30
+
+# Customize height waypoints (all values in metres)
+python 1.scripted_demo.py --num-demo 100 \
+    --approach-height 0.15 \
+    --grasp-height 0.01 \
+    --lift-height 0.25 \
+    --place-height 0.15 \
+    --retract-height 0.30
+```
+
+**Configuration Parameters:**
+- `--approach-height`: EEF height above block center for safe approach (default: 0.12 m)
+- `--grasp-height`: EEF height above block center at grasp point (default: 0.01 m)
+- `--lift-height`: EEF height above block center after grasping (default: 0.20 m)
+- `--place-height`: EEF height above bin origin for release (default: 0.13 m)
+- `--retract-height`: EEF height above bin origin after release (default: 0.25 m)
+- `--steps-per-phase`: Control steps per motion segment (default: 20)
+- `--sim-substeps`: Physics steps per control step (default: 25, matches 20 Hz recording rate)
+- `--max-ik-err-skip`: Skip episode if IK error exceeds threshold (default: 0.05 m)
+
+The scripted generator is particularly useful for:
+- Creating baseline datasets for training
+- Generating large-scale datasets (1000+ demonstrations) quickly
+- Testing environment configurations and spawn bounds
+- Pre-training models before fine-tuning with human demonstrations
+
+**Output:** Saved to `data/demo_data_so101_scripted/` by default (configurable with `--root`).
 
 The dataset is contained as follows:
 ```
@@ -237,7 +347,7 @@ For convenience, we have added [Example Data](data/demo_data_example/) to the re
 Run [notebooks/2.visualize_data.ipynb](notebooks/2.visualize_data.ipynb) or:
 ```bash
 cd scripts
-python visualize_data.py
+python 2.visualize_data.py
 ```
 
 <img src="./media/data.gif" width="480" height="360"></img>
@@ -246,14 +356,20 @@ Visualize your action based on the reconstructed simulation scene.
 
 The main simulation is replaying the action.
 
-The overlayed images on the top right and bottom right are from the dataset. 
+The overlayed images on the top right and bottom right are from the dataset.
+
+**Note:** The visualization script now includes enhanced success checking that verifies:
+- The target object was lifted off the table during the episode
+- The object is positioned inside the target bin
+- The gripper is open after placement
+- The end-effector is positioned above the bin walls 
 
 ## 3. Train Action-Chunking-Transformer (ACT)
 
 Run [notebooks/3.train.ipynb](notebooks/3.train.ipynb) or:
 ```bash
 cd scripts
-python train.py
+python 3.train.py
 ```
 
 **This takes around 30~60 mins**.
@@ -263,6 +379,11 @@ Train the ACT model on your custom dataset. In this example, we set chunk_size a
 The trained checkpoint will be saved in the `checkpoints/act_y` folder.
 
 To evaluate the policy on the dataset, you can calculate the error between ground-truth actions from the dataset.
+
+**Training Tips:**
+- For scripted datasets (generated with `1.scripted_demo.py`), you may achieve faster convergence due to more consistent trajectories
+- Combining scripted and human-teleoperated data can improve policy robustness
+- The enhanced environment with spawn bounds and success checking helps produce cleaner training data
 
 <image src="./media/inference.png"  width="480" height="360">
 
@@ -293,7 +414,7 @@ dataloader = torch.utils.data.DataLoader(
 Run [notebooks/4.deploy.ipynb](notebooks/4.deploy.ipynb) or:
 ```bash
 cd scripts
-python deploy.py
+python 4.deploy.py
 ```
 
 You can download checkpoint from [google drive](https://drive.google.com/drive/folders/1UqxqUgGPKU04DkpQqSWNgfYMhlvaiZsp?usp=sharing) if you don't have gpu to train your model.
@@ -301,6 +422,11 @@ You can download checkpoint from [google drive](https://drive.google.com/drive/f
 <img src="./media/rollout.gif" width="480" height="360" controls></img>
 
 Deploy trained policy in simulation.
+
+**Deployment Notes:**
+- The enhanced environment ensures more reliable success detection during rollouts
+- Object spawn positions now respect robot reachability constraints
+- Success requires demonstrating a proper pick-and-place sequence (lift → transport → place)
 
 
 ## 5-6. Collect data and visualize in language conditioned environment
@@ -311,8 +437,8 @@ Deploy trained policy in simulation.
 Or use the scripts:
 ```bash
 cd scripts
-python language_env.py
-python visualize_data_language.py
+python 5.language_env.py
+python 6.visualize_data_language.py
 ```
 
 

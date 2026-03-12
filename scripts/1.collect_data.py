@@ -51,12 +51,12 @@ class CollectConfig:
     image_writer_threads: int = 10
     image_writer_processes: int = 5
     cleanup_images: bool = True
-    spawn_x_min: float = 0.40
-    spawn_x_max: float = 0.56
-    spawn_y_min: float = -0.2
-    spawn_y_max: float = 0.2
-    spawn_z_min: float = 0.82
-    spawn_z_max: float = 0.82
+    spawn_x_min: float = 0.25
+    spawn_x_max: float = 0.52
+    spawn_y_min: float = 0.02
+    spawn_y_max: float = 0.22
+    spawn_z_min: float = 0.815
+    spawn_z_max: float = 0.815
     spawn_min_dist: float = 0.2
     spawn_xy_margin: float = 0.0
     spawn_fallback_min_dist: float = 0.1
@@ -181,8 +181,9 @@ def resolve_robot_scene_defaults(config):
 
     default_root_norms = {os.path.normpath(path) for path in root_by_profile.values()}
     legacy_root_norms = {
-        os.path.normpath('./demo_data'),
-        os.path.normpath('demo_data'),
+        os.path.normpath(str(PROJECT_ROOT / 'demo_data')),
+        os.path.normpath(str(PROJECT_ROOT / 'demo_data_so100')),
+        os.path.normpath(str(PROJECT_ROOT / 'demo_data_so101')),
     }
     root_norm = os.path.normpath(config.root)
     if root_norm in default_root_norms or root_norm in legacy_root_norms:
@@ -341,15 +342,36 @@ def collect_demonstrations(env, dataset, config):
     action = np.zeros(7)
     episode_id = 0
     record_flag = False
+    frames_in_episode = 0
+    success_streak = 0
+    success_streak_required = 6  # ~0.3s at 20Hz
 
     while env.env.is_viewer_alive() and episode_id < config.num_demo:
         env.step_env()
         if env.env.loop_every(HZ=20):
-            done = env.check_success()
+            success_now = bool(env.check_success())
+            success_streak = (success_streak + 1) if success_now else 0
+            done = success_streak >= success_streak_required
+            
+            # Debug: log success detection
+            if success_now:
+                print(f"[DEBUG] Success detected! streak={success_streak}/{success_streak_required}")
+            
             if done:
-                dataset.save_episode()
+                if frames_in_episode > 0:
+                    dataset.save_episode()
+                    episode_id += 1
+                    print(f"[collect_data] Episode {episode_id-1} saved successfully (success detected)")
+                else:
+                    # Avoid crashing when success is triggered before any
+                    # recorded frame exists (e.g., incidental early success).
+                    dataset.clear_episode_buffer()
+                    print("[collect_data] Success detected before recording frames; reset without saving.")
+                print(f"[collect_data] RESET TRIGGERED BY SUCCESS (done=True, success_streak={success_streak})")
                 env.reset(seed=config.seed)
-                episode_id += 1
+                record_flag = False
+                frames_in_episode = 0
+                success_streak = 0
 
             action, reset = env.teleop_robot()
             if not record_flag and sum(action) != 0:
@@ -357,9 +379,12 @@ def collect_demonstrations(env, dataset, config):
                 print("Start recording")
 
             if reset:
+                print(f"[collect_data] RESET TRIGGERED BY TELEOP (Z key pressed)")
                 env.reset(seed=config.seed)
                 dataset.clear_episode_buffer()
                 record_flag = False
+                frames_in_episode = 0
+                success_streak = 0
 
             ee_pose = env.get_ee_pose()
             agent_image, wrist_image = env.grab_image()
@@ -377,6 +402,7 @@ def collect_demonstrations(env, dataset, config):
                     },
                     task=config.task_name,
                 )
+                frames_in_episode += 1
 
             env.render(teleop=True)
 

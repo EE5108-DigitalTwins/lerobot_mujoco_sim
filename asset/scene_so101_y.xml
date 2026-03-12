@@ -1,7 +1,8 @@
 <mujoco model="Scanned Objects SO101">
     <size memory="500M"/>
 
-    <option integrator="RK4" noslip_iterations="20" />
+    <!-- Simple, proven settings from original tutorial -->
+    <option integrator="RK4" noslip_iterations="40" />
 
     <default>
         <joint armature="0.1" damping="0.1" />

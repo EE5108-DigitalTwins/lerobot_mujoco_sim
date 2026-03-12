@@ -4313,23 +4313,76 @@ class MuJoCoParserClass(object):
         time_diff = self.get_sim_time() - self.get_wall_time()
         if time_diff > 0: time.sleep(time_diff)
 
-    def get_key_pressed_list(self):
+    def keycode_to_text(self, key):
+        """
+        Convert a GLFW keycode to a readable key name.
+        """
+        key_name = glfw.get_key_name(key, 0)
+        if key_name is not None:
+            return key_name.upper()
+
+        special_keys = {
+            glfw.KEY_SPACE: "SPACE",
+            glfw.KEY_TAB: "TAB",
+            glfw.KEY_ENTER: "ENTER",
+            glfw.KEY_ESCAPE: "ESCAPE",
+            glfw.KEY_BACKSPACE: "BACKSPACE",
+            glfw.KEY_INSERT: "INSERT",
+            glfw.KEY_DELETE: "DELETE",
+            glfw.KEY_HOME: "HOME",
+            glfw.KEY_END: "END",
+            glfw.KEY_PAGE_UP: "PAGE_UP",
+            glfw.KEY_PAGE_DOWN: "PAGE_DOWN",
+            glfw.KEY_LEFT: "LEFT",
+            glfw.KEY_RIGHT: "RIGHT",
+            glfw.KEY_UP: "UP",
+            glfw.KEY_DOWN: "DOWN",
+            glfw.KEY_LEFT_SHIFT: "LEFT_SHIFT",
+            glfw.KEY_RIGHT_SHIFT: "RIGHT_SHIFT",
+            glfw.KEY_LEFT_CONTROL: "LEFT_CTRL",
+            glfw.KEY_RIGHT_CONTROL: "RIGHT_CTRL",
+            glfw.KEY_LEFT_ALT: "LEFT_ALT",
+            glfw.KEY_RIGHT_ALT: "RIGHT_ALT",
+            glfw.KEY_LEFT_SUPER: "LEFT_SUPER",
+            glfw.KEY_RIGHT_SUPER: "RIGHT_SUPER",
+            glfw.KEY_MENU: "MENU",
+            glfw.KEY_CAPS_LOCK: "CAPS_LOCK",
+            glfw.KEY_SCROLL_LOCK: "SCROLL_LOCK",
+            glfw.KEY_NUM_LOCK: "NUM_LOCK",
+            glfw.KEY_PRINT_SCREEN: "PRINT_SCREEN",
+            glfw.KEY_PAUSE: "PAUSE",
+        }
+
+        for i in range(1, 26):
+            fkey = getattr(glfw, f"KEY_F{i}", None)
+            if fkey == key:
+                return f"F{i}"
+
+        return special_keys.get(key, str(key))
+
+    def get_key_pressed_list(self, as_text=False):
         """
         Get the list of keys that have been pressed.
         
         Returns:
-            list: List of pressed keys.
+            list: List of pressed keys (GLFW keycodes or names).
         """
-        return list(self.viewer._key_pressed_set)
+        keys = list(self.viewer._key_pressed_set)
+        if as_text:
+            return [self.keycode_to_text(key) for key in keys]
+        return keys
     
-    def get_key_repeated_list(self):
+    def get_key_repeated_list(self, as_text=False):
         """
         Get the list of keys that have been repeatedly pressed.
         
         Returns:
-            list: List of repeatedly pressed keys.
+            list: List of repeatedly pressed keys (GLFW keycodes or names).
         """
-        return list(self.viewer._key_repeated_set)
+        keys = list(self.viewer._key_repeated_set)
+        if as_text:
+            return [self.keycode_to_text(key) for key in keys]
+        return keys
     
     def pop_key_pressed_list(self,key=None):
         """

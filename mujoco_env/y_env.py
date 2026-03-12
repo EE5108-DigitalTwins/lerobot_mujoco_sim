@@ -4,7 +4,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 import mujoco
 from mujoco_env.mujoco_parser import MuJoCoParserClass
-from mujoco_env.utils import prettify, sample_xyzs, rotation_matrix, add_title_to_img
+from mujoco_env.utils import prettify, rotation_matrix, add_title_to_img
 from mujoco_env.ik import solve_ik
 from mujoco_env.transforms import rpy2r, r2rpy, r2quat, quat2r
 import os
@@ -20,8 +20,8 @@ class SimpleEnv:
                 seed = None,
                 mug_body_name='body_obj_mug_5',
                 plate_body_name='body_obj_plate_11',
-                spawn_x_range=(0.30, 0.46),
-                spawn_y_range=(-0.2, 0.2),
+                spawn_x_range=(0.25, 0.52),
+                spawn_y_range=(0.02, 0.22),
                 spawn_z_range=(0.815, 0.815),
                 spawn_min_dist=0.2,
                 spawn_xy_margin=0.0,
@@ -54,7 +54,13 @@ class SimpleEnv:
         self.spawn_min_dist = spawn_min_dist
         self.spawn_xy_margin = spawn_xy_margin
         self.spawn_fallback_min_dist = spawn_fallback_min_dist
+        self.spawn_bin_exclusion_margin = 0.015
         self.robot_profile = robot_profile
+        # Pick-and-place gating: only count success after the target object has
+        # clearly been lifted off the table at least once.
+        self._target_was_lifted = False
+        self._target_rest_height = None
+        self._lift_height_delta = 0.035
 
         if robot_profile == 'omy':
             self.joint_names = ['joint1',
@@ -86,9 +92,12 @@ class SimpleEnv:
             # to [0, 1] where 0 = fully open and 1 = fully closed.
             self.gripper_max_rad = 1.74533
             self.gripper_continuous = True
-            # SO100/SO101: the bin walls physically confirm placement, so no
-            # arm-retract requirement is needed.  Set to None to skip the check.
+            # SO100/SO101: arm-retract height is checked relative to the bin
+            # geometry inside check_success() rather than as an absolute value.
+            # Set to None here to select the SO100/SO101 code path.
             self.success_height_threshold = None
+            # Conservative XY reach limit for table sampling relative to robot base.
+            self.spawn_reach_radius = 0.50
         else:
             raise ValueError(f"Unsupported robot_profile: {robot_profile}")
 
@@ -96,6 +105,7 @@ class SimpleEnv:
         self.n_gripper_actuators = len(self.gripper_actuator_scales)
         self._prev_key_state = {}
         self._teleop_debug_counter = 0
+        self.show_gripper_pad_debug = True
         # Mouse jogging state (middle mouse button drag)
         self._mouse_last_x = None
         self._mouse_last_y = None
@@ -115,6 +125,28 @@ class SimpleEnv:
                 f"Missing joints: {missing_joints}. "
                 f"Available joints: {self.env.joint_names}"
             )
+
+        if self.gripper_continuous:
+            gripper_joint = self.env.model.joint(self.gripper_joint_name)
+            gripper_range = np.asarray(gripper_joint.range, dtype=np.float32)
+            # SO100/SO101 jaw kinematics are inverted relative to the task-space API:
+            # larger raw joint values open the jaw wider, while callers expect
+            # 0 = open and 1 = closed.
+            self.gripper_closed_rad = float(gripper_range[0])
+            self.gripper_open_rad = float(gripper_range[1])
+            self.gripper_motion_span = max(
+                self.gripper_open_rad - self.gripper_closed_rad, 1e-6
+            )
+        else:
+            self.gripper_closed_rad = float(self.gripper_max_rad)
+            self.gripper_open_rad = 0.0
+            self.gripper_motion_span = max(self.gripper_closed_rad - self.gripper_open_rad, 1e-6)
+
+        self._gripper_pad_debug_geoms = [
+            ("fixed_jaw_pad", [1.0, 0.15, 0.15, 0.45]),
+            ("moving_jaw_pad", [0.15, 0.55, 1.0, 0.45]),
+            ("gripper_palm_pad", [1.0, 0.8, 0.15, 0.30]),
+        ]
 
         self.init_viewer()
         self.reset(seed)
@@ -138,6 +170,101 @@ class SimpleEnv:
         was_down = self._prev_key_state.get(key, False)
         self._prev_key_state[key] = is_down
         return is_down and not was_down
+
+    def _make_gripper_ctrl(self, gripper_fraction):
+        """
+        Convert the normalized task-space command (0=open, 1=closed) to raw
+        actuator targets.
+        """
+        gripper_fraction = float(np.clip(gripper_fraction, 0.0, 1.0))
+        if self.gripper_continuous:
+            gripper_target = self.gripper_open_rad - gripper_fraction * self.gripper_motion_span
+        else:
+            gripper_target = gripper_fraction * self.gripper_max_rad
+        gripper_cmd = np.array(
+            [gripper_target] * self.n_gripper_actuators,
+            dtype=np.float32,
+        )
+        gripper_cmd *= self.gripper_actuator_scales
+        return gripper_cmd
+
+    def _get_bin_exclusion_bounds(self):
+        """
+        Return a rectangular XY exclusion zone for the fixed bin.
+        """
+        try:
+            body_names = self.env.get_body_names(prefix='body_obj_')
+            if 'body_obj_bin' not in body_names:
+                return None
+            p_bin = self.env.get_p_body('body_obj_bin')
+        except Exception:
+            return None
+
+        # obj_bin.xml outer footprint half-size is 0.06m in x and y.
+        half_extent = 0.06 + self.spawn_bin_exclusion_margin
+        return (
+            p_bin[0] - half_extent,
+            p_bin[0] + half_extent,
+            p_bin[1] - half_extent,
+            p_bin[1] + half_extent,
+        )
+
+    def _is_within_reach_xy(self, x, y):
+        """
+        Check whether an XY point is inside the SO100/SO101 reachable table area.
+        """
+        if self.robot_profile not in ['so100', 'so101']:
+            return True
+        try:
+            p_base = self.env.get_p_body('base')
+        except Exception:
+            p_base = np.zeros(3, dtype=np.float32)
+        d_xy = np.linalg.norm(np.array([x - p_base[0], y - p_base[1]], dtype=np.float32))
+        return bool(d_xy <= self.spawn_reach_radius)
+
+    def _sample_object_xyzs(self, n_obj, min_dist):
+        """
+        Sample object positions while respecting reachability and bin exclusion.
+        """
+        x_min, x_max = self.spawn_x_range
+        y_min, y_max = self.spawn_y_range
+        z_min, z_max = self.spawn_z_range
+        m = self.spawn_xy_margin
+        x_lo, x_hi = x_min + m, x_max - m
+        y_lo, y_hi = y_min + m, y_max - m
+        if x_lo > x_hi or y_lo > y_hi:
+            raise ValueError("spawn_xy_margin is too large for the configured spawn range.")
+
+        bin_bounds = self._get_bin_exclusion_bounds()
+        xyzs = []
+        max_attempts = 5000
+        attempts = 0
+        while len(xyzs) < n_obj and attempts < max_attempts:
+            attempts += 1
+            x = np.random.uniform(x_lo, x_hi)
+            y = np.random.uniform(y_lo, y_hi)
+            z = np.random.uniform(z_min, z_max)
+            cand = np.array([x, y, z], dtype=np.float32)
+
+            if not self._is_within_reach_xy(x, y):
+                continue
+
+            if bin_bounds is not None:
+                bx0, bx1, by0, by1 = bin_bounds
+                if (bx0 <= x <= bx1) and (by0 <= y <= by1):
+                    continue
+
+            if any(np.linalg.norm(cand - other) < min_dist for other in xyzs):
+                continue
+
+            xyzs.append(cand)
+
+        if len(xyzs) != n_obj:
+            raise ValueError(
+                f"Could not sample {n_obj} objects within constrained spawn region "
+                f"after {max_attempts} attempts."
+            )
+        return np.stack(xyzs, axis=0)
 
     def _teleop_debug_status(self):
         key_map = {
@@ -209,13 +336,23 @@ class SimpleEnv:
         Initialize the viewer
         '''
         self.env.reset()
+        try:
+            p_base = self.env.get_p_body('base')
+            p_tcp = self.env.get_p_body(self.tcp_body_name)
+            # Start the free camera close to the front workspace instead of the
+            # default far zoomed-out view.
+            lookat = 0.5 * (p_base + p_tcp)
+        except Exception:
+            lookat = np.array([0.25, 0.0, 0.95], dtype=np.float32)
         self.env.init_viewer(
-            distance          = 2.0,
-            elevation         = -30, 
-            transparent       = False,
-            black_sky         = True,
-            use_rgb_overlay = False,
-            loc_rgb_overlay = 'top right',
+            distance=0.9,
+            azimuth=180,
+            elevation=-20,
+            lookat=lookat,
+            transparent=False,
+            black_sky=True,
+            use_rgb_overlay=False,
+            loc_rgb_overlay='top right',
         )
         # Pre-assign pert.select to the mocap target body so that
         # Ctrl + right-drag immediately moves it, with no click-to-select needed.
@@ -314,32 +451,14 @@ class SimpleEnv:
         all_obj_names = self.env.get_body_names(prefix='body_obj_')
         obj_names = [n for n in all_obj_names if n != self.plate_body_name]
         n_obj = len(obj_names)
-        x_range = self.spawn_x_range
-        y_range = self.spawn_y_range
-        z_range = self.spawn_z_range
         min_dist = self.spawn_min_dist
-        xy_margin = self.spawn_xy_margin
         try:
-            obj_xyzs = sample_xyzs(
-                n_obj,
-                x_range=x_range,
-                y_range=y_range,
-                z_range=z_range,
-                min_dist=min_dist,
-                xy_margin=xy_margin,
-            )
+            obj_xyzs = self._sample_object_xyzs(n_obj=n_obj, min_dist=min_dist)
         except ValueError as exc:
             fallback_min_dist = self.spawn_fallback_min_dist
             print(f"[SimpleEnv.reset] object sampling failed: {exc}")
             print(f"[SimpleEnv.reset] retrying with min_dist={fallback_min_dist}")
-            obj_xyzs = sample_xyzs(
-                n_obj,
-                x_range=x_range,
-                y_range=y_range,
-                z_range=z_range,
-                min_dist=fallback_min_dist,
-                xy_margin=xy_margin,
-            )
+            obj_xyzs = self._sample_object_xyzs(n_obj=n_obj, min_dist=fallback_min_dist)
         for obj_idx in range(n_obj):
             self.env.set_p_base_body(body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :])
             self.env.set_R_base_body(body_name=obj_names[obj_idx], R=np.eye(3, 3))
@@ -349,18 +468,25 @@ class SimpleEnv:
         self.env.data.qacc[:] = 0.0
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
+            # Initialise gripper in the closed state at reset.
+            self.env.data.ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
         self.env.forward(increase_tick=False)
 
         # Let objects settle under gravity before starting teleoperation
+        settle_ctrl = np.zeros(self.env.n_ctrl, dtype=np.float32)
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
+            # Keep gripper closed while objects settle under gravity.
+            settle_ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
+            self.env.data.ctrl[:] = settle_ctrl
         for _ in range(20):
-            self.env.step(np.zeros(self.env.n_ctrl))
+            self.env.step(settle_ctrl)
 
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
         self.prev_q = copy.deepcopy(q_zero)
-        self.q = np.concatenate([q_zero, np.zeros(self.n_gripper_actuators, dtype=np.float32)])
+        # Append closed-gripper command to the joint configuration.
+        self.q = np.concatenate([q_zero, self._make_gripper_ctrl(1.0)])
         self.p0, self.R0 = self.env.get_pR_body(body_name=self.tcp_body_name)
         mug_init_pose, plate_init_pose = self.get_obj_pose()
         self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose],dtype=np.float32)
@@ -368,7 +494,11 @@ class SimpleEnv:
             self.step_env()
         print("DONE INITIALIZATION")
         # gripper_state is a float in [0, 1]: 0 = fully open, 1 = fully closed.
-        self.gripper_state = 0.0
+        self.gripper_state = 1.0
+        self._target_was_lifted = False
+        # Record post-settling baseline height for the target object.  Lift
+        # detection is measured relative to this baseline (not absolute z).
+        self._target_rest_height = float(self.env.get_p_body(self.mug_body_name)[2])
         self.past_chars = []
 
     def step(self, action):
@@ -411,6 +541,7 @@ class SimpleEnv:
                 ik_th              = np.radians(5.0),
                 render             = False,
                 verbose_warning    = False,
+                restore_state      = False,
             )
         elif self.action_type == 'delta_joint_angle':
             q = action[:self.n_arm_joints] + prev_q
@@ -423,13 +554,10 @@ class SimpleEnv:
         self.prev_q = prev_q
         self.last_q = copy.deepcopy(q)
         
-        # Scale normalised gripper action [0, 1] → position setpoint in radians,
-        # then apply per-actuator scales (e.g. symmetric jaw coupling).
-        gripper_cmd = np.array(
-            [np.clip(float(action[-1]), 0.0, 1.0) * self.gripper_max_rad] * self.n_gripper_actuators,
-            dtype=np.float32,
-        )
-        gripper_cmd *= self.gripper_actuator_scales
+        # Map the task-space convention 0=open, 1=closed to the underlying
+        # actuator command. SO100/SO101 use the opposite raw joint direction:
+        # larger angles open the jaw wider.
+        gripper_cmd = self._make_gripper_ctrl(action[-1])
         self.compute_q = q
         q = np.concatenate([q, gripper_cmd])
 
@@ -445,23 +573,30 @@ class SimpleEnv:
             raise ValueError('state_type not recognized')
 
     def step_env(self):
+        # Ensure perturbation target stays locked to mocap, preventing accidental
+        # selection of blocks or gripper which can cause free joint corruption
+        if self._mocap_body_id >= 0:
+            viewer = getattr(self.env, 'viewer', None)
+            if viewer is not None and hasattr(viewer, 'pert'):
+                if viewer.pert.select != self._mocap_body_id:
+                    viewer.pert.select = self._mocap_body_id
+        
         self.env.step(self.q)
 
     def grab_image(self):
         '''
         grab images from the environment
         returns:
-            rgb_agent: np.array, rgb image from the agent's view
-            rgb_ego: np.array, rgb image from the egocentric
+            rgb_agent: np.array, rgb image from the top view
+            rgb_aux: np.array, secondary image (used as wrist/ego or side view)
         '''
-        self.rgb_agent = self.env.get_fixed_cam_rgb(
-            cam_name='agentview')
-        self.rgb_ego = self.env.get_fixed_cam_rgb(
-            cam_name='egocentric')
-        # self.rgb_top = self.env.get_fixed_cam_rgbd_pcd(
-        #     cam_name='topview')
-        self.rgb_side = self.env.get_fixed_cam_rgb(
-            cam_name='sideview')
+        # Primary stream: top-down agent view
+        self.rgb_agent = self.env.get_fixed_cam_rgb(cam_name='topview')
+        # Secondary stream: use the sideview camera as the "wrist/ego" stream
+        # so that two distinct video streams are recorded and visualised.
+        self.rgb_ego = self.env.get_fixed_cam_rgb(cam_name='sideview')
+        # Keep rgb_side in sync with the secondary stream for overlays.
+        self.rgb_side = self.rgb_ego.copy()
         return self.rgb_agent, self.rgb_ego
         
 
@@ -474,20 +609,53 @@ class SimpleEnv:
         R_current = R_current @ np.array([[1,0,0],[0,0,1],[0,1,0 ]])
         self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
         self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
-        rgb_egocentric_view = add_title_to_img(self.rgb_ego,text='Egocentric View',shape=(640,480))
-        rgb_agent_view = add_title_to_img(self.rgb_agent,text='Agent View',shape=(640,480))
-        
-        self.env.viewer_rgb_overlay(rgb_agent_view,loc='top right')
-        self.env.viewer_rgb_overlay(rgb_egocentric_view,loc='bottom right')
+        if self.show_gripper_pad_debug:
+            self._plot_gripper_contact_pads()
+
+        # Always show both camera streams when available:
+        # - Top View (agent) in the top-right
+        # - Secondary View (wrist/side) in the bottom-right
+        rgb_agent_view = add_title_to_img(self.rgb_agent, text='Top View', shape=(640,480))
+        self.env.viewer_rgb_overlay(rgb_agent_view, loc='top right')
+
+        if self.rgb_ego is not None:
+            rgb_ego_view = add_title_to_img(self.rgb_ego, text='Wrist / Side View', shape=(640,480))
+            self.env.viewer_rgb_overlay(rgb_ego_view, loc='bottom right')
+
         if teleop:
-            rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
+            rgb_side_view = add_title_to_img(self.rgb_side, text='Side View', shape=(640,480))
             self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
-            self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
-            self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
+            self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list(as_text=True)))
+            self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list(as_text=True)))
             focused, active_keys = self._teleop_debug_status()
             self.env.viewer_text_overlay(text1='Window Focus', text2='YES' if focused else 'NO (click viewer)')
             self.env.viewer_text_overlay(text1='Active Keys (raw)', text2='%s' % active_keys)
+            self.env.viewer_text_overlay(text1='Pad Debug', text2='ON')
         self.env.render()
+
+    def _plot_gripper_contact_pads(self):
+        """
+        Draw translucent boxes over the gripper collision pads so they are easy
+        to inspect in the viewer.
+        """
+        for geom_name, rgba in self._gripper_pad_debug_geoms:
+            geom_id = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_GEOM, geom_name
+            )
+            if geom_id < 0:
+                continue
+            p = self.env.data.geom_xpos[geom_id].copy()
+            R = self.env.data.geom_xmat[geom_id].reshape(3, 3).copy()
+            size = self.env.model.geom_size[geom_id].copy()
+            self.env.plot_box(
+                p=p,
+                R=R,
+                xlen=2.0 * size[0],
+                ylen=2.0 * size[1],
+                zlen=2.0 * size[2],
+                rgba=rgba,
+                label=geom_name,
+            )
 
     def get_joint_state(self):
         '''
@@ -497,11 +665,7 @@ class SimpleEnv:
             [j1,j2,j3,j4,j5,j6,gripper]  where gripper ∈ [0,1] (0=open, 1=closed)
         '''
         qpos = self.env.get_qpos_joints(joint_names=self.joint_names)
-        gripper = self.env.get_qpos_joint(self.gripper_joint_name)
-        if self.gripper_continuous:
-            gripper_val = float(np.clip(gripper[0] / self.gripper_max_rad, 0.0, 1.0))
-        else:
-            gripper_val = 1.0 if gripper[0] > 0.5 else 0.0
+        gripper_val = self._get_gripper_fraction()
         return np.concatenate([qpos, [gripper_val]], dtype=np.float32)
     
     def teleop_robot(self):
@@ -709,7 +873,7 @@ class SimpleEnv:
                         ik_eps             = 0.01,
                         ik_err_th          = 0.01,
                         verbose_warning    = False,
-                        restore_state      = True,
+                        restore_state      = False,
                     )
                     dq += np.clip(q_ik - q_current, -joint_vel * 4, joint_vel * 4)
             self._last_mocap_pos = mocap_pos.copy()
@@ -784,27 +948,46 @@ class SimpleEnv:
             [dj1,dj2,dj3,dj4,dj5,dj6,gripper]  where gripper ∈ [0,1] (0=open, 1=closed)
         '''
         delta = self.compute_q - self.prev_q
-        gripper = self.env.get_qpos_joint(self.gripper_joint_name)
-        if self.gripper_continuous:
-            gripper_val = float(np.clip(gripper[0] / self.gripper_max_rad, 0.0, 1.0))
-        else:
-            gripper_val = 1.0 if gripper[0] > 0.5 else 0.0
+        gripper_val = self._get_gripper_fraction()
         return np.concatenate([delta, [gripper_val]], dtype=np.float32)
+
+    def _get_gripper_fraction(self):
+        """
+        Return the normalized task-space gripper command where 0=open, 1=closed.
+        """
+        gripper = self.env.get_qpos_joint(self.gripper_joint_name)
+        raw_qpos = float(gripper[0])
+        if self.gripper_continuous:
+            return float(
+                np.clip(
+                    (self.gripper_open_rad - raw_qpos) / self.gripper_motion_span,
+                    0.0,
+                    1.0,
+                )
+            )
+        return 1.0 if raw_qpos > 0.5 else 0.0
+
+    def _is_gripper_open(self, threshold=0.2):
+        """
+        Return True when the normalized close fraction is below the open threshold.
+        """
+        return self._get_gripper_fraction() < threshold
 
     def check_success(self):
         '''
         Check if the object has been placed in/on the target.
 
         SO100/SO101 (bin task):
-            The episode ends the moment the block lands on the bin floor.
+            The episode ends only when the block is truly inside the bin AND the
+            gripper has been retracted above the bin opening.
             Conditions:
-              1. Block XY is within the bin interior (< 5 cm from bin centre).
-              2. Block Z is below the bin wall tops — i.e. it is physically
-                 inside the bin, not being held above it.
-                 Wall tops ≈ bin_z + 0.076 m.
-            No gripper check: the block can only satisfy condition 2 once it
-            has been released and fallen, so false positives during the pick
-            phase are impossible.
+              1. Block center is within bin inner XY bounds (not just near bin).
+              2. Block center Z is inside bin cavity bounds (resting on bin floor).
+              3. Block was previously lifted off the table (prevents pushing/rolling in).
+              4. Block is in contact with the bin (confirms physical placement).
+              5. Gripper is open (not holding the block).
+              6. TCP is above the bin wall tops (gripper retracted after release).
+              7. Gripper is not in contact with the block.
 
         OMY (plate task):
             1. Object XY within 10 cm of plate centre.
@@ -816,16 +999,83 @@ class SimpleEnv:
         p_tgt = self.env.get_p_body(self.plate_body_name)
 
         if self.success_height_threshold is None:
-            # SO100/SO101: block must be inside the bin and below the wall tops.
-            xy_ok   = np.linalg.norm(p_obj[:2] - p_tgt[:2]) < 0.05
-            # wall top = bin_body_z + 0.076; use a small margin below that
-            in_bin  = p_obj[2] < (p_tgt[2] + 0.07)
-            return bool(xy_ok and in_bin)
+            # SO100/SO101 bin geometry from obj_bin.xml:
+            # - inner half-width ~= 0.054 - 0.006 = 0.048 m
+            # - floor top offset   = 0.012 m
+            # - wall top offset    = 0.076 m
+            # Block is 25 mm cube (half-size 0.0125 m) in obj_blocks.xml.
+            inner_half_extent = 0.048
+            block_half_size = 0.0125
+            floor_top = p_tgt[2] + 0.012
+            wall_top = p_tgt[2] + 0.076
+
+            dx = abs(p_obj[0] - p_tgt[0])
+            dy = abs(p_obj[1] - p_tgt[1])
+            xy_ok = (dx < (inner_half_extent - 0.003)) and (dy < (inner_half_extent - 0.003))
+
+            # Block must be resting on the bin floor.  A 25 mm cube resting on
+            # the floor has center height floor_top + block_half_size.
+            expected_floor_contact_center_z = floor_top + block_half_size
+            z_min = expected_floor_contact_center_z - 0.006
+            z_max = expected_floor_contact_center_z + 0.010
+            z_ok = (p_obj[2] > z_min) and (p_obj[2] < z_max)
+
+            # Task intent is pick-and-place; pushing/rolling directly into the
+            # bin should not terminate the episode.  Require a clear lift above
+            # the settled reset height first.
+            rest_h = self._target_rest_height if self._target_rest_height is not None else p_obj[2]
+            if p_obj[2] > (rest_h + self._lift_height_delta):
+                self._target_was_lifted = True
+            if not self._target_was_lifted:
+                return False
+
+            # Contact gating: success requires actual block-bin contact and no
+            # active block-gripper contact.
+            contact_pairs = self.env.get_contact_body_names()
+
+            def _has_contact(body_a, body_b):
+                for c1, c2 in contact_pairs:
+                    if (c1 == body_a and c2 == body_b) or (c1 == body_b and c2 == body_a):
+                        return True
+                return False
+
+            block_bin_contact = _has_contact(self.mug_body_name, self.plate_body_name)
+            block_gripper_contact = _has_contact(self.mug_body_name, 'gripper') or _has_contact(
+                self.mug_body_name, 'moving_jaw_so101_v1'
+            )
+
+            gripper_open = self._is_gripper_open(threshold=0.20)
+
+            # The gripper jaw tip must be retracted above the bin wall tops.
+            # IMPORTANT: tcp_body_name ('gripper') is the palm, ~98 mm above the
+            # actual jaw tips.  Using the palm position means the check passes even
+            # when the jaws are inside the bin cavity, which is the root cause of
+            # false-positive success when merely touching the block.
+            # Use the 'gripperframe' site (jaw tip) for an accurate measurement.
+            _site_id = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_SITE, 'gripperframe')
+            if _site_id >= 0:
+                tip_z = float(self.env.data.site_xpos[_site_id][2])
+            else:
+                # Fallback: subtract the nominal jaw-tip offset from the palm body.
+                tip_z = float(self.env.get_p_body(self.tcp_body_name)[2]) - 0.098
+            tcp_above = tip_z > wall_top + 0.015  # jaw tip ≥ 15 mm above bin wall tops
+
+            success = bool(xy_ok and z_ok and gripper_open and block_bin_contact
+                        and tcp_above and not block_gripper_contact)
+            
+            # Debug logging
+            if success or (xy_ok and z_ok):  # Log when close to success
+                print(f"[DEBUG check_success] xy_ok={xy_ok} z_ok={z_ok} lifted={self._target_was_lifted} "
+                      f"gripper_open={gripper_open} block_bin={block_bin_contact} "
+                      f"tcp_above={tcp_above} no_grip_contact={not block_gripper_contact} => {success}")
+            
+            return success
         else:
             # OMY: original plate-placement logic.
             xy_ok        = np.linalg.norm(p_obj[:2] - p_tgt[:2]) < 0.1
             z_ok         = np.linalg.norm(p_obj[2]  - p_tgt[2])  < 0.6
-            gripper_open = self.env.get_qpos_joint(self.gripper_joint_name)[0] < 0.1
+            gripper_open = self._is_gripper_open(threshold=0.10)
             if not (xy_ok and z_ok and gripper_open):
                 return False
             tcp_z = self.env.get_p_body(self.tcp_body_name)[2]
@@ -850,8 +1100,20 @@ class SimpleEnv:
         '''
         self.env.set_p_base_body(body_name=self.mug_body_name,p=p_mug)
         self.env.set_R_base_body(body_name=self.mug_body_name,R=np.eye(3,3))
-        self.env.set_p_base_body(body_name=self.plate_body_name,p=p_plate)
-        self.env.set_R_base_body(body_name=self.plate_body_name,R=np.eye(3,3))
+        # Only attempt to move the plate/target body if it actually has a free joint.
+        # In the SO100/SO101 bin task, the bin is a fixed body with no free joint,
+        # so calling set_p_base_body on it leads to qpos shape mismatches.
+        try:
+            body = self.env.model.body(self.plate_body_name)
+            n_joint = body.jntnum
+            if n_joint > 0:
+                first_joint = self.env.model.joint(body.jntadr[0])
+                if first_joint.type[0] == mujoco.mjtJoint.mjJNT_FREE:
+                    self.env.set_p_base_body(body_name=self.plate_body_name, p=p_plate)
+                    self.env.set_R_base_body(body_name=self.plate_body_name, R=np.eye(3, 3))
+        except Exception:
+            # If anything goes wrong (e.g. body not found), fall back to leaving the plate fixed.
+            pass
         self.step_env()
 
 
