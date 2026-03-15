@@ -271,6 +271,35 @@ class SimpleEnv:
             )
         return np.stack(xyzs, axis=0)
 
+    def _sample_object_xyzs_with_retries(self, n_obj):
+        """
+        Sample object positions with progressively relaxed spacing constraints.
+        """
+        candidate_min_dists = []
+        for value in [
+            self.spawn_min_dist,
+            self.spawn_fallback_min_dist,
+            0.08,
+            0.06,
+        ]:
+            value = float(value)
+            if value < 0:
+                continue
+            if not any(np.isclose(value, existing) for existing in candidate_min_dists):
+                candidate_min_dists.append(value)
+
+        last_exc = None
+        for idx, min_dist in enumerate(candidate_min_dists):
+            try:
+                if idx > 0:
+                    print(f"[SimpleEnv.reset] retrying with min_dist={min_dist}")
+                return self._sample_object_xyzs(n_obj=n_obj, min_dist=min_dist)
+            except ValueError as exc:
+                last_exc = exc
+                print(f"[SimpleEnv.reset] object sampling failed: {exc}")
+
+        raise last_exc
+
     def _teleop_debug_status(self):
         key_map = {
             'W': glfw.KEY_W,
@@ -456,14 +485,7 @@ class SimpleEnv:
         all_obj_names = self.env.get_body_names(prefix='body_obj_')
         obj_names = [n for n in all_obj_names if n != self.plate_body_name]
         n_obj = len(obj_names)
-        min_dist = self.spawn_min_dist
-        try:
-            obj_xyzs = self._sample_object_xyzs(n_obj=n_obj, min_dist=min_dist)
-        except ValueError as exc:
-            fallback_min_dist = self.spawn_fallback_min_dist
-            print(f"[SimpleEnv.reset] object sampling failed: {exc}")
-            print(f"[SimpleEnv.reset] retrying with min_dist={fallback_min_dist}")
-            obj_xyzs = self._sample_object_xyzs(n_obj=n_obj, min_dist=fallback_min_dist)
+        obj_xyzs = self._sample_object_xyzs_with_retries(n_obj=n_obj)
 
         # Record and apply the initial spawn configuration of all movable blocks.
         self.spawn_obj_names = list(obj_names)

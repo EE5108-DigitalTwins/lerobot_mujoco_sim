@@ -7,7 +7,7 @@
     </asset>
 
     <worldbody>
-        <body name="body_obj_can_1" pos="0 0 0" euler="0 0 0">
+        <body name="body_obj_redbull" pos="0 0 0" euler="0 0 0">
             <joint type="free" />
             <geom type="cylinder" pos="0 0 0.06" size="0.024 0.06" class="no_visual_collision" contype="1" conaffinity="1"/>
             <geom type="box" pos="0 0 0.001" size="0.022 0.022 0.001" class="no_visual_collision" contype="1" conaffinity="1"/>

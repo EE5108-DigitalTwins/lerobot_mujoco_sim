@@ -50,6 +50,7 @@ import mujoco
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
 from mujoco_env.transforms import rpy2r
+from so101_inverse_kinematics import get_inverse_kinematics
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 # ---------------------------------------------------------------------------
@@ -82,9 +83,9 @@ class ScriptedConfig:
     # Motion timing
     # sim_substeps=25 matches the 20 Hz recording rate used in 1.collect_data.py
     # (MuJoCo default dt=0.002 s → 500 Hz simulation → 25 steps per 20 Hz frame).
-    steps_per_phase: int = 20       # control steps per motion segment
+    steps_per_phase: int = 40       # control steps per motion segment
     sim_substeps: int = 25          # physics steps per control step
-    settle_steps: int = 30          # extra physics steps after gripper open/close
+    settle_steps: int = 50          # extra physics steps after gripper open/close
     max_ik_tick: int = 500          # IK solver iterations per waypoint
     ik_err_th: float = 0.015        # IK positional error threshold (metres)
     max_ik_err_skip: float = 0.05   # skip episode if any waypoint exceeds this
@@ -327,21 +328,56 @@ def _solve_wp(
     q_init: np.ndarray,
     max_ik_tick: int,
     ik_err_th: float,
+    p_tip_trgt: np.ndarray = None,
 ) -> tuple[np.ndarray, float]:
-    """Solve IK for one waypoint.  Returns (q_solution, residual_error)."""
+    """
+    Solve IK for one waypoint.  Returns (q_solution, residual_error).
+
+    For the SO-101 arm, prefer the geometric inverse kinematics from
+    `so101_inverse_kinematics.py` (course-style).  For other robot profiles,
+    fall back to the generic Jacobian-based IK solver.
+    """
+    # Geometric IK branch: SO-101 analytic solution using desired tip position.
+    is_so101 = getattr(env, "robot_profile", None) == "so101"
+    if is_so101:
+        # p_tip_trgt is the desired gripperframe (jaw-tip) position in world coords.
+        # The analytic IK expects tip, not palm.
+        joint_cfg = get_inverse_kinematics(p_tip_trgt if p_tip_trgt is not None else p_trgt)
+        q_geom = np.array(
+            [
+                joint_cfg["shoulder_pan"],
+                joint_cfg["shoulder_lift"],
+                joint_cfg["elbow_flex"],
+                joint_cfg["wrist_flex"],
+                joint_cfg["wrist_roll"],
+            ],
+            dtype=np.float32,
+        )
+        # Use the geometric IK as the q_init seed for numerical IK refinement.
+        q_init = q_geom
+
+    # SO-101 is 5-DOF and cannot track a full 3-D orientation target; passing
+    # R_trgt would make the Jacobian solver minimise an unachievable rotation
+    # error that dominates err_stack and inflates the residual metric used for
+    # the skip check.  Use position-only IK for SO-101.
+    ik_R = None if is_so101 else R_trgt
+
+    # Default: numeric Jacobian-based IK.
     q, err_stack, _ = solve_ik(
         env=env.env,
         joint_names_for_ik=env.joint_names,
         body_name_trgt=env.tcp_body_name,
         q_init=q_init,
         p_trgt=p_trgt,
-        R_trgt=R_trgt,
+        R_trgt=ik_R,
         max_ik_tick=max_ik_tick,
         ik_err_th=ik_err_th,
         restore_state=True,
         verbose_warning=True,
     )
-    return q, float(np.linalg.norm(err_stack))
+    # Return only position-error magnitude for the skip threshold check.
+    # err_stack is 3-element (position only) when R_trgt is None.
+    return q, float(np.linalg.norm(err_stack[:3]))
 
 
 def _resize(img: np.ndarray, size: int) -> np.ndarray:
@@ -409,9 +445,11 @@ class PickPlaceFSM:
     def __init__(self, env: SimpleEnv, cfg: ScriptedConfig) -> None:
         self.env = env
         self.cfg = cfg
-        # World-frame offset from gripper tip site ('gripperframe') to TCP body
-        # ('gripper'). Populated lazily on first episode.
-        self._tcp_tip_offset: np.ndarray | None = None
+        # Local (TCP-frame) offset from the gripper palm ('gripper' body) to the
+        # jaw-tip site ('gripperframe'). Populated lazily on first episode and
+        # reused so that IK can target the palm while the tip aligns with the
+        # desired block/bin positions under a fixed "face-down" orientation.
+        self._tcp_tip_offset_local: np.ndarray | None = None
 
     # ------------------------------------------------------------------
     # Primitive motions
@@ -507,28 +545,28 @@ class PickPlaceFSM:
         p_bin = env.env.get_p_body(env.plate_body_name).copy()
         obj_init = env.obj_init_pose.copy()
 
-        # Lazily compute palm-to-tip offset in world frame using the
+        # Lazily compute palm-to-tip offset in the TCP local frame using the
         # 'gripperframe' site when available.
-        if self._tcp_tip_offset is None:
+        if self._tcp_tip_offset_local is None:
             try:
                 site_id = mujoco.mj_name2id(
                     env.env.model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe"
                 )
                 if site_id >= 0:
                     p_tip_now = env.env.data.site_xpos[site_id].copy()
-                    p_palm_now = env.env.get_p_body(env.tcp_body_name).copy()
-                    # Vector that, when added to desired tip position, yields
-                    # the corresponding palm/TCP target in world coordinates.
-                    self._tcp_tip_offset = p_palm_now - p_tip_now
+                    p_palm_now, R_palm_now = env.env.get_pR_body(env.tcp_body_name)
+                    # Store offset in the palm/TCP local frame so it can be
+                    # rotated consistently by a fixed target orientation.
+                    self._tcp_tip_offset_local = R_palm_now.T @ (p_tip_now - p_palm_now)
                 else:
-                    self._tcp_tip_offset = np.zeros(3, dtype=np.float32)
+                    self._tcp_tip_offset_local = np.zeros(3, dtype=np.float32)
             except Exception:
-                self._tcp_tip_offset = np.zeros(3, dtype=np.float32)
+                self._tcp_tip_offset_local = np.zeros(3, dtype=np.float32)
 
         # --- Waypoint positions ---
         # p_obj[2] is the block body-centre after physics settling (~table_z + 0.0125 m).
         # p_bin[2] is the bin body-origin (fixed in XML at 0.80 m).
-        # Tip-centric waypoints (desired positions for the jaw-tip site).
+        # Tip-centric waypoints (desired positions for the jaw-tip site in world).
         p_tip_approach  = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.approach_height])
         p_tip_grasp     = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.grasp_height])
         p_tip_lift      = np.array([p_obj[0], p_obj[1], p_obj[2] + cfg.lift_height])
@@ -536,27 +574,35 @@ class PickPlaceFSM:
         p_tip_place     = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.place_height])
         p_tip_retract   = np.array([p_bin[0], p_bin[1], p_bin[2] + cfg.retract_height])
 
-        # Convert desired tip positions to TCP/palm targets using the cached
-        # world-frame offset. This approximately compensates for the gripper
-        # link geometry without changing the low-level IK implementation.
-        offset = self._tcp_tip_offset if self._tcp_tip_offset is not None else np.zeros(3, dtype=np.float32)
-        p_approach  = p_tip_approach  + offset
-        p_grasp     = p_tip_grasp     + offset
-        p_lift      = p_tip_lift      + offset
-        p_above_bin = p_tip_above_bin + offset
-        p_place     = p_tip_place     + offset
-        p_retract   = p_tip_retract   + offset
+        # Fixed "face-down" palm orientation: matches the SO-101 default pose
+        # used in SimpleEnv.reset(). With this fixed R, the local palm→tip
+        # offset becomes a constant world-frame vector at all waypoints.
+        R_target = _GRASP_R
+        offset_local = (
+            self._tcp_tip_offset_local
+            if self._tcp_tip_offset_local is not None
+            else np.zeros(3, dtype=np.float32)
+        )
+        offset_world = R_target @ offset_local
 
-        # Orientation policy: for SO-101, do not enforce a specific tool
-        # orientation in IK. This greatly improves reachability across the
-        # full spawn range; the arm will choose any feasible orientation that
-        # gets the TCP close to the positional waypoints.
-        R_approach  = None
-        R_grasp     = None
-        R_lift      = None
-        R_above_bin = None
-        R_place     = None
-        R_retract   = None
+        # Convert desired tip positions to TCP/palm targets using the cached
+        # local offset and fixed orientation. These palm targets are used by
+        # the numeric IK path; the geometric path in _solve_wp() instead uses
+        # the tip positions directly as analytic targets.
+        p_approach  = p_tip_approach  - offset_world
+        p_grasp     = p_tip_grasp     - offset_world
+        p_lift      = p_tip_lift      - offset_world
+        p_above_bin = p_tip_above_bin - offset_world
+        p_place     = p_tip_place     - offset_world
+        p_retract   = p_tip_retract   - offset_world
+
+        # Orientation policy: enforce a fixed face-down palm at all waypoints.
+        R_approach  = R_target
+        R_grasp     = R_target
+        R_lift      = R_target
+        R_above_bin = R_target
+        R_place     = R_target
+        R_retract   = R_target
 
         # Debug: compare IK targets against current TCP and object/bin positions.
         p_tcp, _ = env.env.get_pR_body(body_name=env.tcp_body_name)
@@ -572,14 +618,23 @@ class PickPlaceFSM:
             print(f"[DEBUG] {name}: {p_wp}")
 
         # --- Solve IK for all waypoints (arm-only, no gripper) ---
+        # The numeric IK always targets the palm (gripper body); palm targets are
+        # used as p_trgt so the body-frame error is measured correctly.
+        # For SO-101 the geometric IK seed uses the tip (gripperframe site)
+        # positions, passed separately via p_tip_trgt.
+        p_palm_targets = (p_approach,  p_grasp,  p_lift,  p_above_bin,  p_place,  p_retract)
+        p_tip_targets  = (p_tip_approach, p_tip_grasp, p_tip_lift, p_tip_above_bin,
+                          p_tip_place, p_tip_retract)
+        R_targets      = (R_approach, R_grasp, R_lift, R_above_bin, R_place, R_retract)
+        tip_args = p_tip_targets if cfg.env_robot_profile == "so101" else (None,) * 6
         print("    [IK] solving 6 waypoints…", end=" ", flush=True)
         q0          = _get_arm_q(env)
-        q_approach, e0 = _solve_wp(env, p_approach,  R_approach,  q0,         cfg.max_ik_tick, cfg.ik_err_th)
-        q_grasp,    e1 = _solve_wp(env, p_grasp,     R_grasp,     q_approach, cfg.max_ik_tick, cfg.ik_err_th)
-        q_lift,     e2 = _solve_wp(env, p_lift,      R_lift,      q_grasp,    cfg.max_ik_tick, cfg.ik_err_th)
-        q_above_bin,e3 = _solve_wp(env, p_above_bin, R_above_bin, q_lift,     cfg.max_ik_tick, cfg.ik_err_th)
-        q_place,    e4 = _solve_wp(env, p_place,     R_place,     q_above_bin,cfg.max_ik_tick, cfg.ik_err_th)
-        q_retract,  e5 = _solve_wp(env, p_retract,   R_retract,   q_place,    cfg.max_ik_tick, cfg.ik_err_th)
+        q_approach, e0 = _solve_wp(env, p_palm_targets[0], R_targets[0], q0,          cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[0])
+        q_grasp,    e1 = _solve_wp(env, p_palm_targets[1], R_targets[1], q_approach,  cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[1])
+        q_lift,     e2 = _solve_wp(env, p_palm_targets[2], R_targets[2], q_grasp,     cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[2])
+        q_above_bin,e3 = _solve_wp(env, p_palm_targets[3], R_targets[3], q_lift,      cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[3])
+        q_place,    e4 = _solve_wp(env, p_palm_targets[4], R_targets[4], q_above_bin, cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[4])
+        q_retract,  e5 = _solve_wp(env, p_palm_targets[5], R_targets[5], q_place,     cfg.max_ik_tick, cfg.ik_err_th, p_tip_trgt=tip_args[5])
 
         max_err = max(e0, e1, e2, e3, e4, e5)
         print(f"max IK err = {max_err:.4f} m")
@@ -652,7 +707,10 @@ def collect(env: SimpleEnv, dataset: LeRobotDataset, cfg: ScriptedConfig):
             buf.discard(dataset)
             print("    ✗ failed — resetting and retrying")
 
-        env.reset(seed=cfg.seed)
+        # Use a fixed seed only for the initial environment construction; subsequent
+        # resets should randomise the block positions so scripted demos cover a
+        # diverse workspace instead of repeating the same spawn configuration.
+        env.reset()
 
     elapsed = time.time() - t_start
     print(f"\n[done] {saved} demos saved in {elapsed:.1f}s")

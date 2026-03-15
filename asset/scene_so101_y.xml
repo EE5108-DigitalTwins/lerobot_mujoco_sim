@@ -22,14 +22,17 @@
     <include file="./tabletop/object/obj_blocks.xml"/>
     <include file="./tabletop/object/obj_bin.xml"/>
 
-    <include file="./so_arm100/SO101/so101_new_calib.xml" />
+    <include file="./so_arm100/SO101/so101_shared.xml" />
 
-    <!-- Mocap IK target: in the viewer, double-click the red sphere then drag
-         to move the arm.  Non-colliding; position is reset to the TCP on env reset.
+    <!-- Mocap IK target used for Ctrl-drag arm control. Hidden from the viewer;
+         position is reset to the TCP on env reset.
          Only active when action_type='eef_pose'. -->
     <worldbody>
+        <body pos="0 0 0.805">
+            <include file="./so_arm100/SO101/so101_body.xml" />
+        </body>
         <body name="target" mocap="true" pos="0.35 -0.1 0.95">
-            <geom type="sphere" size="0.025" rgba="1 0.2 0.2 0.7"
+            <geom type="sphere" size="0.025" rgba="1 0.2 0.2 0"
                   contype="0" conaffinity="0"/>
         </body>
     </worldbody>

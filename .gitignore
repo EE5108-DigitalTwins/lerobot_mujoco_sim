@@ -14,6 +14,7 @@ build/
 venv/
 env/
 ENV/
+./scripts/test_env/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
@@ -82,13 +83,3 @@ lerobot/
 # doc files
 REFACTORING_SUMMARY.md
 PATH_FIX_NOTES.md
-
-# extra code files fro
-scripts/5.language_env.py
-scripts/6.visualize_data.py
-scripts/7.pi0.py
-scripts/8.smolvla.py
-notebooks/5.language_env.ipynb
-notebooks/6.visualize_data.ipynb
-notebooks/7.pi0.ipynb
-notebooks/8.smolvla.ipynb
