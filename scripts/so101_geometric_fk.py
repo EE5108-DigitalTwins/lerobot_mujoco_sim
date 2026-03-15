@@ -77,14 +77,14 @@ test_configuration = {
 }
 
 # for debug - shows the zero position of the robot and the TCP frame
-# test_configuration = {
-#     'shoulder_pan': 0.0,   # in radians for mujoco! 
-#     'shoulder_lift': 0.0,
-#     'elbow_flex': 0.0,
-#     'wrist_flex': 0.0,
-#     'wrist_roll': 0.0,
-#     'gripper': 0.0          
-# }
+test_configuration = {
+    'shoulder_pan': 0.0,   # in radians for mujoco! 
+    'shoulder_lift': 0.0,
+    'elbow_flex': 0.0,
+    'wrist_flex': 0.0,
+    'wrist_roll': 0.0,
+    'gripper': 0.0          
+}
 
 body_xml_path = PROJECT_ROOT / 'asset' / 'so_arm100' / 'SO101' / 'so101_body.xml'
 

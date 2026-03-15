@@ -14,7 +14,6 @@ build/
 venv/
 env/
 ENV/
-./scripts/test_env/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
