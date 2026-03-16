@@ -1,5 +1,25 @@
 import time
 import mujoco
+
+SO101_JOINT_ORDER = [
+    'shoulder_pan',
+    'shoulder_lift',
+    'elbow_flex',
+    'wrist_flex',
+    'wrist_roll',
+    'gripper',
+]
+
+
+def _read_pose_dict_from_model(m, d):
+    q = []
+    for joint_name in SO101_JOINT_ORDER:
+        joint_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if joint_id < 0:
+            return None
+        qpos_adr = m.jnt_qposadr[joint_id]
+        q.append(float(d.qpos[qpos_adr]))
+    return convert_to_dictionary(q)
         
 def convert_to_dictionary(qpos):
     return {
@@ -29,12 +49,14 @@ def send_position_command(d, position_dict):
     pos = convert_to_list(position_dict)
     d.ctrl = pos
 
-def move_to_pose(m, d, viewer, desired_position, duration):
+def move_to_pose(m, d, viewer, desired_position, duration, verbose=True):
     start_time = time.time()
-    starting_pose = d.qpos.copy()
-    starting_pose = convert_to_dictionary(starting_pose)
+    starting_pose = _read_pose_dict_from_model(m, d)
+    if starting_pose is None:
+        starting_pose = convert_to_dictionary(d.qpos.copy())
 
-    print(f"Moving to desired position: {desired_position} over {duration} seconds.")
+    if verbose:
+        print(f"Moving to desired position: {desired_position} over {duration} seconds.")
     
     while True:
         t = time.time() - start_time
@@ -59,8 +81,9 @@ def move_to_pose(m, d, viewer, desired_position, duration):
         viewer.sync()
     
 def hold_position(m, d, viewer, duration):
-    current_pos = d.qpos.copy()
-    current_pos_dict = convert_to_dictionary(current_pos)
+    current_pos_dict = _read_pose_dict_from_model(m, d)
+    if current_pos_dict is None:
+        current_pos_dict = convert_to_dictionary(d.qpos.copy())
     
     start_time = time.time()
     while True:

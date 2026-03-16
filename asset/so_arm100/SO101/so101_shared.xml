@@ -67,5 +67,8 @@
     <position class="sts3215" name="wrist_roll" joint="wrist_roll" forcerange="-3.35 3.35" ctrlrange="-2.74385 2.84121"/>
     <position class="sts3215" name="gripper" joint="gripper" forcerange="-3.35 3.35" ctrlrange="-0.17453 1.74533"/>
   </actuator>
+  <contact>
+    <exclude body1="gripper" body2="moving_jaw_so101_v1"/>
+  </contact>
   <equality/>
 </mujocoinclude>

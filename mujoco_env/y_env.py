@@ -424,9 +424,9 @@ class SimpleEnv:
             np.random.seed(seed=seed)
         
         # Set robot-specific initial configurations and home positions
-        if self.robot_profile == 'so101' and self.action_type == 'delta_joint_angle':
-            # Direct joint configuration for joint-space control
-            q_zero = np.array([0.0, 0.8, -0.8, 0.0, np.pi / 2], dtype=np.float32)
+        if self.robot_profile == 'so101':
+            # Always start from the all-zero SO101 joint configuration.
+            q_zero = np.zeros(self.n_arm_joints, dtype=np.float32)
             self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
         else:
             # Use IK for Cartesian / eef_pose controlled robots
@@ -434,10 +434,6 @@ class SimpleEnv:
                 q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
                 p_trgt = np.array([0.25, -0.35, 0.95])
                 R_trgt = rpy2r(np.deg2rad([90, 0, 90]))
-            elif self.robot_profile == 'so101':
-                q_init = np.array([0.0, 0.8, -0.8, 0.0, np.pi / 2], dtype=np.float32)
-                p_trgt = np.array([0.35, -0.1, 0.95])
-                R_trgt = rpy2r(np.deg2rad([0, 90, 0]))
             else:  # omy
                 q_init = np.zeros(self.n_arm_joints, dtype=np.float32)
                 p_trgt = np.array([0.3, 0.0, 1.0])
@@ -499,16 +495,16 @@ class SimpleEnv:
         self.env.data.qacc[:] = 0.0
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
-            # Initialise gripper in the closed state at reset.
-            self.env.data.ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
+            # Initialise gripper in the open state at reset.
+            self.env.data.ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(0.0)
         self.env.forward(increase_tick=False)
 
         # Let objects settle under gravity before starting teleoperation
         settle_ctrl = np.zeros(self.env.n_ctrl, dtype=np.float32)
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
-            # Keep gripper closed while objects settle under gravity.
-            settle_ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
+            # Keep gripper open while objects settle under gravity.
+            settle_ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(0.0)
             self.env.data.ctrl[:] = settle_ctrl
         for _ in range(20):
             self.env.step(settle_ctrl)
@@ -516,8 +512,8 @@ class SimpleEnv:
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
         self.prev_q = copy.deepcopy(q_zero)
-        # Append closed-gripper command to the joint configuration.
-        self.q = np.concatenate([q_zero, self._make_gripper_ctrl(1.0)])
+        # Append open-gripper command to the joint configuration.
+        self.q = np.concatenate([q_zero, self._make_gripper_ctrl(0.0)])
         self.p0, self.R0 = self.env.get_pR_body(body_name=self.tcp_body_name)
         mug_init_pose, plate_init_pose = self.get_obj_pose()
         self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose],dtype=np.float32)
@@ -525,7 +521,7 @@ class SimpleEnv:
             self.step_env()
         print("DONE INITIALIZATION")
         # gripper_state is a float in [0, 1]: 0 = fully open, 1 = fully closed.
-        self.gripper_state = 1.0
+        self.gripper_state = 0.0
         self._target_was_lifted = False
         # Record post-settling baseline height for the target object.  Lift
         # detection is measured relative to this baseline (not absolute z).

@@ -227,7 +227,6 @@ def validate_config(config):
 
 
 def build_env(config):
-    # SO101 is SCARA-like (vertical joints), use joint control instead of Cartesian IK
     action_type = 'delta_joint_angle' if config.env_robot_profile == 'so101' else 'eef_pose'
     
     return SimpleEnv(

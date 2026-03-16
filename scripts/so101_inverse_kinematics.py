@@ -1,5 +1,5 @@
 import numpy as np
-from so101_forward_kinematics import get_gw1, get_g12, get_g23, get_g34
+from so101_forward_kinematics import get_forward_kinematics, get_gw1, get_g12, get_g23, get_g34
 
 # ---------------------------------------------------------------------------
 # Robot constants
@@ -15,6 +15,17 @@ ZERO_INTERIOR = np.pi/2 - BETA1 - BETA2  # interior elbow angle at theta3=0: ~73
 
 TCP_Z_OFFSET = 0.100  # g5t: TCP is this far below wrist_roll in world z
 G45_LOCAL    = np.array([0.0, -0.0611, 0.0181])  # g45 displacement in wrist_flex frame
+DEFAULT_WRIST_ROLL_DEG = 0.0
+
+# The analytic FK/IK model is expressed in the robot's local scene frame, while
+# the tabletop MuJoCo scene places the robot on a table at z=0.805 m.
+# Public IK inputs are absolute tabletop world coordinates.
+TABLETOP_WORLD_OFFSET = np.array([0.0, 0.0, 0.805], dtype=np.float64)
+
+SHOULDER_LIFT_MIN_DEG = -100.0
+SHOULDER_LIFT_MAX_DEG = 100.0
+ELBOW_FLEX_MIN_DEG = -95.0
+ELBOW_FLEX_MAX_DEG = 95.0
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +41,16 @@ def solve_theta1(target_position):
     x = target_position[0] - BASE_X
     y = target_position[1] - BASE_Y
     return np.rad2deg(-np.arctan2(y, x))
+
+
+def world_to_analytic_frame(target_position):
+    """Convert absolute tabletop world coordinates to the analytic IK frame."""
+    return np.asarray(target_position, dtype=np.float64) - TABLETOP_WORLD_OFFSET
+
+
+def analytic_to_world_frame(position):
+    """Convert analytic IK/FK coordinates back to tabletop world coordinates."""
+    return np.asarray(position, dtype=np.float64) + TABLETOP_WORLD_OFFSET
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +149,73 @@ def solve_theta4(theta1_deg, theta2_deg, theta3_deg):
     return np.rad2deg(theta4)
 
 
+def _tcp_error(theta1_deg, theta2_deg, theta3_deg, target_position):
+    theta4_deg = solve_theta4(theta1_deg, theta2_deg, theta3_deg)
+    fk_pos, _ = get_forward_kinematics(
+        {
+            'shoulder_pan': theta1_deg,
+            'shoulder_lift': theta2_deg,
+            'elbow_flex': theta3_deg,
+            'wrist_flex': theta4_deg,
+            'wrist_roll': DEFAULT_WRIST_ROLL_DEG,
+        }
+    )
+    err = np.asarray(fk_pos, dtype=np.float64) - np.asarray(target_position, dtype=np.float64)
+    return float(np.linalg.norm(err)), float(theta4_deg)
+
+
+def solve_theta2_theta3_from_tcp(theta1_deg, target_position):
+    """Solve shoulder/elbow by minimizing TCP position error directly.
+
+    This uses absolute world-frame TCP coordinates and assumes a top-down grasp
+    with fixed `wrist_roll=0`.
+    """
+    target_position = np.asarray(target_position, dtype=np.float64)
+
+    best_err = float('inf')
+    best_pair = (float('nan'), float('nan'))
+
+    coarse_t2 = np.linspace(-20.0, 80.0, 21)
+    coarse_t3 = np.linspace(-90.0, 20.0, 23)
+    for theta2_deg in coarse_t2:
+        for theta3_deg in coarse_t3:
+            err, _ = _tcp_error(theta1_deg, theta2_deg, theta3_deg, target_position)
+            if err < best_err:
+                best_err = err
+                best_pair = (theta2_deg, theta3_deg)
+
+    theta2_deg, theta3_deg = best_pair
+    for step in (10.0, 5.0, 2.0, 1.0, 0.5):
+        improved = True
+        while improved:
+            improved = False
+            candidates = [
+                (theta2_deg, theta3_deg),
+                (theta2_deg + step, theta3_deg),
+                (theta2_deg - step, theta3_deg),
+                (theta2_deg, theta3_deg + step),
+                (theta2_deg, theta3_deg - step),
+                (theta2_deg + step, theta3_deg + step),
+                (theta2_deg + step, theta3_deg - step),
+                (theta2_deg - step, theta3_deg + step),
+                (theta2_deg - step, theta3_deg - step),
+            ]
+            for cand_t2, cand_t3 in candidates:
+                cand_t2 = float(np.clip(cand_t2, SHOULDER_LIFT_MIN_DEG, SHOULDER_LIFT_MAX_DEG))
+                cand_t3 = float(np.clip(cand_t3, ELBOW_FLEX_MIN_DEG, ELBOW_FLEX_MAX_DEG))
+                err, _ = _tcp_error(theta1_deg, cand_t2, cand_t3, target_position)
+                if err + 1e-9 < best_err:
+                    best_err = err
+                    theta2_deg = cand_t2
+                    theta3_deg = cand_t3
+                    improved = True
+
+    if best_err > 0.02:
+        return float('nan'), float('nan')
+
+    return float(theta2_deg), float(theta3_deg)
+
+
 # ---------------------------------------------------------------------------
 # Full inverse kinematics
 # ---------------------------------------------------------------------------
@@ -144,7 +232,7 @@ def get_inverse_kinematics(target_position, target_orientation=None):
     -------
     joint_config : dict (angles in degrees)
     """
-    target_position = np.array(target_position)
+    target_position = world_to_analytic_frame(target_position)
 
     joint_config = {
         'shoulder_pan':  0.0,
@@ -159,11 +247,8 @@ def get_inverse_kinematics(target_position, target_orientation=None):
     theta1 = solve_theta1(target_position)
     joint_config['shoulder_pan'] = theta1
 
-    # 1c: desired wrist position
-    wrist_pos = get_wrist_flex_position(target_position, theta1)
-
-    # 1d: theta2, theta3
-    theta2, theta3 = solve_theta2_theta3(theta1, wrist_pos)
+    # 1d: theta2, theta3 solved from TCP directly in absolute world frame
+    theta2, theta3 = solve_theta2_theta3_from_tcp(theta1, target_position)
     joint_config['shoulder_lift'] = theta2
     joint_config['elbow_flex']    = theta3
 
@@ -172,7 +257,7 @@ def get_inverse_kinematics(target_position, target_orientation=None):
     joint_config['wrist_flex'] = theta4
 
     # 1f: theta5
-    joint_config['wrist_roll'] = theta1   # cancels theta1's z-rotation
+    joint_config['wrist_roll'] = DEFAULT_WRIST_ROLL_DEG
 
     return joint_config
 

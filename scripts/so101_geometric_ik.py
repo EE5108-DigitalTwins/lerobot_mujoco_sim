@@ -62,7 +62,7 @@ send_position_command(d, initial_config)
 with mujoco.viewer.launch_passive(m, d) as viewer:
   
   # Specify the desired position of the cube to be picked up
-  temp_desired_position = [0.2, 0.2, 0.014]
+  temp_desired_position = [0.2, 0.15, 0.014]
 
   # Add a cylinder as a site for visualization
   show_cube(viewer, temp_desired_position, np.eye(3))
