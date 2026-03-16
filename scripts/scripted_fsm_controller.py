@@ -25,6 +25,10 @@ GRASP_X_OFFSET = -0.005       # small XY tweak to center over block
 GRASP_Y_OFFSET = 0.0
 APPROACH_Z_OFFSET = 0.075     # hover height above block / box
 PLACE_Z_OFFSET = 0.040        # depth when placing in box
+# Max Z step per tick when descending into bin (avoids overshoot/oscillation)
+PLACE_DESCEND_Z_STEP = 0.015
+# When within this distance in place_in_box, scale down dq to avoid overshoot/oscillation
+PLACE_DAMP_DIST = 0.04
 FSM_DEBUG = True
 FSM_DEBUG_EVERY = 5
 MAX_DQ_STEP = 1.2
@@ -1150,6 +1154,12 @@ def fsm_step(
 
     # Gripper command for this phase
     gripper_cmd = float(phase_cfg["gripper"])
+    # In place_in_box: keep gripper closed until arm has stopped at target, then release
+    if phase_name == "place_in_box" and target_xyz is not None and phase_cfg.get("tol") is not None:
+        place_dist = float(np.linalg.norm(ee_xyz - target_xyz))
+        if place_dist >= phase_cfg["tol"]:
+            gripper_cmd = 1.0  # still moving – keep closed
+        # else use phase_cfg["gripper"] (0.0) once at target
 
     # ------------------------------------------------------------------
     # IK + action
@@ -1165,6 +1175,14 @@ def fsm_step(
         # path follows that shaping rather than a straight line.
         if phase_name == "above_block":
             waypoint = target_xyz.copy()
+        elif phase_name == "place_in_box":
+            # Direct target with limited Z step to avoid overshoot/oscillation
+            # before dropping the block (same idea as descend phase).
+            waypoint = np.array(target_xyz, dtype=np.float32)
+            current_z = float(ee_xyz[2])
+            target_z = float(target_xyz[2])
+            if current_z - target_z > PLACE_DESCEND_Z_STEP:
+                waypoint[2] = current_z - PLACE_DESCEND_Z_STEP
         else:
             waypoint = next_ee_waypoint(env, target_xyz, get_ee_xyz_fn, speed=6.0)
 
@@ -1179,6 +1197,12 @@ def fsm_step(
 
         q_current = env.get_joint_state()[:env.n_arm_joints]
         dq = np.clip(q_target - q_current, -MAX_DQ_STEP, MAX_DQ_STEP)
+        # In place_in_box, damp motion when close to target to avoid oscillation at drop
+        if phase_name == "place_in_box" and target_xyz is not None:
+            place_dist = float(np.linalg.norm(ee_xyz - target_xyz))
+            if place_dist < PLACE_DAMP_DIST:
+                scale = place_dist / PLACE_DAMP_DIST
+                dq = dq * scale
 
     action = np.zeros(env.n_arm_joints + 1, dtype=np.float32)
     action[:env.n_arm_joints] = dq
