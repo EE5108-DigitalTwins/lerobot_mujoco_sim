@@ -132,7 +132,9 @@ PHASES = [
             cube[1] + GRASP_Y_OFFSET,
             cube[2] + APPROACH_Z_OFFSET,
         ],
-        gripper=0.0,
+        # Start episodes with the gripper closed so we clearly
+        # see the open gesture at the beginning of the descend phase.
+        gripper=1.0,
         tol=0.02,
         timeout=150,
     ),
@@ -144,6 +146,7 @@ PHASES = [
             cube[1] + GRASP_Y_OFFSET,
             cube[2] + GRASP_Z_OFFSET,
         ],
+        # Open as we descend so the jaws clear any obstacles before closing.
         gripper=0.0,
         tol=0.015,
         timeout=150,

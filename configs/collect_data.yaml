@@ -4,8 +4,9 @@ num_demo: 1
 root: ./data/demo_data_so101
 task_name: Put green block in the bin
 xml_path: ./asset/scene_so101_y.xml
-mug_body_name: body_obj_block_3
-plate_body_name: body_obj_bin
+# Target object to pick: blue block (see obj_blocks.xml)
+pick_body_name: body_obj_block_2
+place_body_name: body_obj_bin
 env_robot_profile: so101
 offline_local_only: true
 delete_existing_dataset: false

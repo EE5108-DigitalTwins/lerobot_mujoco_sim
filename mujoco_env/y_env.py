@@ -18,8 +18,8 @@ class SimpleEnv:
                 state_type='joint_angle',
                 robot_profile='so101',
                 seed = None,
-                mug_body_name='body_obj_mug_5',
-                plate_body_name='body_obj_plate_11',
+                pick_body_name='body_obj_mug_5',
+                place_body_name='body_obj_plate_11',
                 spawn_x_range=(0.20, 0.3),
                 spawn_y_range=(0.02, 0.1),
                 spawn_z_range=(0.815, 0.815),
@@ -33,8 +33,8 @@ class SimpleEnv:
             state_type: str, type of state space, 'joint_angle' or 'ee_pose'
             robot_profile: str, robot kinematic profile ('omy', 'so100', 'so101')
             seed: int, seed for random number generator
-            mug_body_name: str, body name for the mug object in the MuJoCo model
-            plate_body_name: str, body name for the plate object in the MuJoCo model
+            pick_body_name: str, body name for the pick object in the MuJoCo model
+            place_body_name: str, body name for the place/target object in the MuJoCo model
             spawn_x_range: tuple[float, float], x sampling range for objects
             spawn_y_range: tuple[float, float], y sampling range for objects
             spawn_z_range: tuple[float, float], z sampling range for objects
@@ -46,8 +46,8 @@ class SimpleEnv:
         self.env = MuJoCoParserClass(name='Tabletop',rel_xml_path=xml_path)
         self.action_type = action_type
         self.state_type = state_type
-        self.mug_body_name = mug_body_name
-        self.plate_body_name = plate_body_name
+        self.pick_body_name = pick_body_name
+        self.place_body_name = place_body_name
         self.spawn_x_range = spawn_x_range
         self.spawn_y_range = spawn_y_range
         self.spawn_z_range = spawn_z_range
@@ -105,7 +105,9 @@ class SimpleEnv:
         self.n_gripper_actuators = len(self.gripper_actuator_scales)
         self._prev_key_state = {}
         self._teleop_debug_counter = 0
-        self.show_gripper_pad_debug = True
+        # Disable gripper pad debug overlays by default; they are useful for
+        # debugging contact geometry but visually noisy during data collection.
+        self.show_gripper_pad_debug = False
         # Mouse jogging state (middle mouse button drag)
         self._mouse_last_x = None
         self._mouse_last_y = None
@@ -489,7 +491,7 @@ class SimpleEnv:
         # Randomise pick-object positions.  The plate/target body is fixed in
         # the scene XML (no free joint) and is never touched here.
         all_obj_names = self.env.get_body_names(prefix='body_obj_')
-        obj_names = [n for n in all_obj_names if n != self.plate_body_name]
+        obj_names = [n for n in all_obj_names if n != self.place_body_name]
         n_obj = len(obj_names)
         obj_xyzs = self._sample_object_xyzs_with_retries(n_obj=n_obj)
 
@@ -505,16 +507,17 @@ class SimpleEnv:
         self.env.data.qacc[:] = 0.0
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
-            # Initialise gripper in the open state at reset.
-            self.env.data.ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(0.0)
+            # Initialise gripper in the closed state at reset so scripted episodes
+            # visibly begin by opening during the descend phase.
+            self.env.data.ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
         self.env.forward(increase_tick=False)
 
         # Let objects settle under gravity before starting teleoperation
         settle_ctrl = np.zeros(self.env.n_ctrl, dtype=np.float32)
         if self.env.data.ctrl is not None and self.env.data.ctrl.size > 0:
             self.env.data.ctrl[:] = 0.0
-            # Keep gripper open while objects settle under gravity.
-            settle_ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(0.0)
+            # Keep gripper closed while objects settle under gravity.
+            settle_ctrl[-self.n_gripper_actuators:] = self._make_gripper_ctrl(1.0)
             self.env.data.ctrl[:] = settle_ctrl
         for _ in range(20):
             self.env.step(settle_ctrl)
@@ -522,8 +525,8 @@ class SimpleEnv:
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
         self.prev_q = copy.deepcopy(q_zero)
-        # Append open-gripper command to the joint configuration.
-        self.q = np.concatenate([q_zero, self._make_gripper_ctrl(0.0)])
+        # Append closed-gripper command to the joint configuration.
+        self.q = np.concatenate([q_zero, self._make_gripper_ctrl(1.0)])
         self.p0, self.R0 = self.env.get_pR_body(body_name=self.tcp_body_name)
         mug_init_pose, plate_init_pose = self.get_obj_pose()
         self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose],dtype=np.float32)
@@ -531,11 +534,13 @@ class SimpleEnv:
             self.step_env()
         print("DONE INITIALIZATION")
         # gripper_state is a float in [0, 1]: 0 = fully open, 1 = fully closed.
-        self.gripper_state = 0.0
+        # Start episodes with the gripper closed so the first scripted/teleop
+        # action does not immediately open it.
+        self.gripper_state = 1.0
         self._target_was_lifted = False
         # Record post-settling baseline height for the target object.  Lift
         # detection is measured relative to this baseline (not absolute z).
-        self._target_rest_height = float(self.env.get_p_body(self.mug_body_name)[2])
+        self._target_rest_height = float(self.env.get_p_body(self.pick_body_name)[2])
         self.past_chars = []
 
     def step(self, action):
@@ -667,7 +672,6 @@ class SimpleEnv:
             focused, active_keys = self._teleop_debug_status()
             self.env.viewer_text_overlay(text1='Window Focus', text2='YES' if focused else 'NO (click viewer)')
             self.env.viewer_text_overlay(text1='Active Keys (raw)', text2='%s' % active_keys)
-            self.env.viewer_text_overlay(text1='Pad Debug', text2='ON')
         self.env.render()
 
     def _plot_gripper_contact_pads(self):
@@ -1032,8 +1036,8 @@ class SimpleEnv:
             3. Gripper open (raw joint < 0.1 rad).
             4. TCP Z > success_height_threshold (arm retracted upward).
         '''
-        p_obj = self.env.get_p_body(self.mug_body_name)
-        p_tgt = self.env.get_p_body(self.plate_body_name)
+        p_obj = self.env.get_p_body(self.pick_body_name)
+        p_tgt = self.env.get_p_body(self.place_body_name)
 
         if self.success_height_threshold is None:
             # SO100/SO101 bin geometry from obj_bin.xml:
@@ -1076,9 +1080,9 @@ class SimpleEnv:
                         return True
                 return False
 
-            block_bin_contact = _has_contact(self.mug_body_name, self.plate_body_name)
-            block_gripper_contact = _has_contact(self.mug_body_name, 'gripper') or _has_contact(
-                self.mug_body_name, 'moving_jaw_so101_v1'
+            block_bin_contact = _has_contact(self.pick_body_name, self.place_body_name)
+            block_gripper_contact = _has_contact(self.pick_body_name, 'gripper') or _has_contact(
+                self.pick_body_name, 'moving_jaw_so101_v1'
             )
 
             gripper_open = self._is_gripper_open(threshold=0.20)
@@ -1124,30 +1128,30 @@ class SimpleEnv:
             p_mug: np.array, position of the mug
             p_plate: np.array, position of the plate
         '''
-        p_mug = self.env.get_p_body(self.mug_body_name)
-        p_plate = self.env.get_p_body(self.plate_body_name)
-        return p_mug, p_plate
+        p_pick = self.env.get_p_body(self.pick_body_name)
+        p_place = self.env.get_p_body(self.place_body_name)
+        return p_pick, p_place
     
-    def set_obj_pose(self, p_mug, p_plate):
+    def set_obj_pose(self, p_pick, p_place):
         '''
         Set the object poses
         args:
             p_mug: np.array, position of the mug
             p_plate: np.array, position of the plate
         '''
-        self.env.set_p_base_body(body_name=self.mug_body_name,p=p_mug)
-        self.env.set_R_base_body(body_name=self.mug_body_name,R=np.eye(3,3))
+        self.env.set_p_base_body(body_name=self.pick_body_name,p=p_pick)
+        self.env.set_R_base_body(body_name=self.pick_body_name,R=np.eye(3,3))
         # Only attempt to move the plate/target body if it actually has a free joint.
         # In the SO100/SO101 bin task, the bin is a fixed body with no free joint,
         # so calling set_p_base_body on it leads to qpos shape mismatches.
         try:
-            body = self.env.model.body(self.plate_body_name)
+            body = self.env.model.body(self.place_body_name)
             n_joint = body.jntnum
             if n_joint > 0:
                 first_joint = self.env.model.joint(body.jntadr[0])
                 if first_joint.type[0] == mujoco.mjtJoint.mjJNT_FREE:
-                    self.env.set_p_base_body(body_name=self.plate_body_name, p=p_plate)
-                    self.env.set_R_base_body(body_name=self.plate_body_name, R=np.eye(3, 3))
+                    self.env.set_p_base_body(body_name=self.place_body_name, p=p_place)
+                    self.env.set_R_base_body(body_name=self.place_body_name, R=np.eye(3, 3))
         except Exception:
             # If anything goes wrong (e.g. body not found), fall back to leaving the plate fixed.
             pass

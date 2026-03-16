@@ -45,8 +45,9 @@ xml_path = str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml')
 PnPEnv = SimpleEnv(
     xml_path, 
     action_type='joint_angle',
-    mug_body_name='body_obj_block_3',
-    plate_body_name='body_obj_bin'
+    # Target object to pick: blue block
+    pick_body_name='body_obj_block_2',
+    place_body_name='body_obj_bin'
 )
 
 # ## Roll-Out Your Policy

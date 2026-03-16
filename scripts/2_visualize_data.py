@@ -102,13 +102,25 @@ def main():
     print(f"[minimal_replay] starting from episode 0 ({data['source_path']})")
     T = data["action"].shape[0]
 
-    # Build environment (same scene as collect script)
+    # Build environment (same scene as collect script). For visualization we
+    # immediately overwrite object poses from the dataset, so we only need a
+    # spawn workspace that allows reset to succeed without overly strict
+    # spacing. Use the same reachable region as scripted collection.
     xml_path = str(PROJECT_ROOT / "asset" / "scene_so101_y.xml")
     env = SimpleEnv(
         xml_path,
+        # We'll reconstruct absolute joint angles from the stored joint deltas
+        # and replay them in joint_angle mode for robustness.
         action_type="joint_angle",
-        mug_body_name="body_obj_block_3",
-        plate_body_name="body_obj_bin",
+        # Target object to pick: blue block
+        pick_body_name="body_obj_block_2",
+        place_body_name="body_obj_bin",
+        spawn_x_range=(0.21, 0.27),
+        spawn_y_range=(0.04, 0.16),
+        spawn_z_range=(0.815, 0.815),
+        spawn_min_dist=0.04,
+        spawn_xy_margin=0.0,
+        spawn_fallback_min_dist=0.04,
     )
 
     step = 0
@@ -127,23 +139,25 @@ def main():
                 env.reset()
 
             if step == 0:
-                # Restore mug + plate pose from dataset
+                # Restore pick/place object poses from dataset
                 obj0 = data["obj_init"][0]  # [6]
-                p_mug = obj0[:3]
-                p_plate = obj0[3:]
-                env.set_obj_pose(p_mug, p_plate)
+                p_pick = obj0[:3]
+                p_place = obj0[3:]
+                env.set_obj_pose(p_pick, p_place)
 
                 # Restore full block spawn configuration
                 spawn_xyz = data["spawn.block_xyz"][0]  # (4, 3)
                 all_obj_names = env.env.get_body_names(prefix="body_obj_")
-                obj_names = [n for n in all_obj_names if n != env.plate_body_name]
+                obj_names = [n for n in all_obj_names if n != env.place_body_name]
                 if spawn_xyz.shape[0] == len(obj_names):
                     for idx, body_name in enumerate(obj_names):
                         env.env.set_p_base_body(body_name=body_name, p=spawn_xyz[idx, :])
                         env.env.set_R_base_body(body_name=body_name, R=np.eye(3, 3))
 
-            # Apply action
-            act = data["action"][step]  # (A,)
+            # Apply action: stored "action" is absolute joint angles + gripper
+            # (same as 1_batch_collect_data and 1.collect_data). Use joint_angle
+            # mode and pass the recorded frame directly — do not integrate.
+            act = np.asarray(data["action"][step], dtype=np.float32)
             env.step(act)
 
             # Feed images into overlay buffers

@@ -209,7 +209,7 @@ The task is to pick a mug and place it on the plate. The environment recognizes 
 
 **Default Scene Configuration:**
 The default scene `asset/scene_so101_y.xml` uses:
-- Object to pick: `body_obj_block_3` (green block)
+- Object to pick: `body_obj_block_2` (blue block)
 - Target location: `body_obj_bin` (bin)
 - Task: "Put green block in the bin"
 
@@ -221,7 +221,7 @@ The spawn bounds have been calibrated for SO-101 reachability:
 - Minimum distance between objects: `0.2` m
 - Automatic bin exclusion: Objects won't spawn inside or too close to the target bin
 
-If using a custom scene, update the `mug_body_name` and `plate_body_name` parameters accordingly.
+If using a custom scene, update the `pick_body_name` and `place_body_name` parameters accordingly.
 
 <img src="./media/teleop.gif" width="480" height="360">
 

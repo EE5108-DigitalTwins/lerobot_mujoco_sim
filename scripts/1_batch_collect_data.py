@@ -35,8 +35,9 @@ class CollectConfig:
     root: str = str(Path(__file__).resolve().parent.parent / 'data' / 'demo_data_so101')
     task_name: str = 'Put green block in the bin'
     xml_path: str = str(Path(__file__).resolve().parent.parent / 'asset' / 'scene_so101_y.xml')
-    mug_body_name: str = 'body_obj_block_3'
-    plate_body_name: str = 'body_obj_bin'
+    # Target object to pick: blue block (body_obj_block_2 in obj_blocks.xml)
+    pick_body_name: str = 'body_obj_block_2'
+    place_body_name: str = 'body_obj_bin'
     env_robot_profile: str = 'so101'
     offline_local_only: bool = True
     delete_existing_dataset: bool = False
@@ -93,8 +94,8 @@ def parse_args():
     parser.add_argument("--root", default=merged_defaults["root"])
     parser.add_argument("--task-name", default=merged_defaults["task_name"])
     parser.add_argument("--xml-path", default=merged_defaults["xml_path"])
-    parser.add_argument("--mug-body-name", default=merged_defaults["mug_body_name"])
-    parser.add_argument("--plate-body-name", default=merged_defaults["plate_body_name"])
+    parser.add_argument("--pick-body-name", default=merged_defaults["pick_body_name"])
+    parser.add_argument("--place-body-name", default=merged_defaults["place_body_name"])
     parser.add_argument("--env-robot-profile", default=merged_defaults["env_robot_profile"], choices=["omy", "so100", "so101"])
     parser.add_argument("--offline-local-only", action=argparse.BooleanOptionalAction, default=merged_defaults["offline_local_only"])
     parser.add_argument("--delete-existing-dataset", action=argparse.BooleanOptionalAction, default=merged_defaults["delete_existing_dataset"])
@@ -126,8 +127,8 @@ def parse_args():
         root=args.root,
         task_name=args.task_name,
         xml_path=args.xml_path,
-        mug_body_name=args.mug_body_name,
-        plate_body_name=args.plate_body_name,
+        pick_body_name=args.pick_body_name,
+        place_body_name=args.place_body_name,
         env_robot_profile=args.env_robot_profile,
         offline_local_only=args.offline_local_only,
         delete_existing_dataset=args.delete_existing_dataset,
@@ -283,8 +284,8 @@ def build_env(config):
         robot_profile=config.env_robot_profile,
         seed=config.seed,
         state_type='joint_angle',
-        mug_body_name=config.mug_body_name,
-        plate_body_name=config.plate_body_name,
+        pick_body_name=config.pick_body_name,
+        place_body_name=config.place_body_name,
         spawn_x_range=(config.spawn_x_min, config.spawn_x_max),
         spawn_y_range=(config.spawn_y_min, config.spawn_y_max),
         spawn_z_range=(config.spawn_z_min, config.spawn_z_max),
@@ -501,7 +502,6 @@ def collect_demonstrations(env, dataset, config):
                     ee_site_name=config.ee_site_name
                 )
 
-            prev_joint_state = env.get_joint_state()
             prev_phase = fsm["phase"]
 
             # CHANGED: fsm_step now only needs env, fsm, and helper functions
@@ -533,11 +533,13 @@ def collect_demonstrations(env, dataset, config):
                     ee_site_name=config.ee_site_name
                 )
 
+            # Apply the scripted action.
             env.step(action)
 
-            curr_joint_state = env.get_joint_state()
-            joint_delta = curr_joint_state[: env.n_arm_joints] - prev_joint_state[: env.n_arm_joints]
-            joint_q = np.concatenate([joint_delta, [curr_joint_state[-1]]], dtype=np.float32)
+            # Record action in the same format as 1.collect_data.py:
+            # absolute joint angles for all arm joints plus the normalized
+            # gripper command in the last entry.
+            joint_q = env.get_joint_state().astype(np.float32)
 
             ee_pose = env.get_ee_pose()  # kept for dataset recording only
             agent_image, wrist_image = env.grab_image()
