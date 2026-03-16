@@ -12,6 +12,7 @@ offline_local_only: true
 delete_existing_dataset: false
 robot_type: so101
 fps: 20
+control_hz: 40  # control loop rate; higher = faster arm (e.g. 40, 50)
 image_size: 256
 image_writer_threads: 10
 image_writer_processes: 5

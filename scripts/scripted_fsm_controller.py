@@ -26,12 +26,13 @@ GRASP_Y_OFFSET = 0.0
 APPROACH_Z_OFFSET = 0.075     # hover height above block / box
 PLACE_Z_OFFSET = 0.040        # depth when placing in box
 # Max Z step per tick when descending into bin (avoids overshoot/oscillation)
-PLACE_DESCEND_Z_STEP = 0.015
+PLACE_DESCEND_Z_STEP = 0.028
 # When within this distance in place_in_box, scale down dq to avoid overshoot/oscillation
 PLACE_DAMP_DIST = 0.04
 FSM_DEBUG = True
 FSM_DEBUG_EVERY = 5
-MAX_DQ_STEP = 1.2
+# Max joint delta per control step (rad/tick); larger = faster motion
+MAX_DQ_STEP = 1.5
 
 # Orientation policy: only yaw (Z-rotation) is allowed to change.
 LOCK_XY_ROTATION = True       # keep roll/pitch fixed, free yaw
@@ -1088,8 +1089,8 @@ def fsm_step(
         lateral_vec = target_xyz[:2] - ee_xyz[:2]
         lateral_dist = float(np.linalg.norm(lateral_vec))
 
-        VERT_STEP = 0.02
-        XY_STEP = 0.03
+        VERT_STEP = 0.035
+        XY_STEP = 0.05
 
         if lateral_dist > 0.02:
             # Stage 1: move only in XY at fixed approach_z.
@@ -1130,8 +1131,8 @@ def fsm_step(
         lateral_vec = target_xyz[:2] - ee_xyz[:2]
         lateral_dist = float(np.linalg.norm(lateral_vec))
 
-        VERT_STEP = 0.02
-        XY_STEP = 0.03
+        VERT_STEP = 0.035
+        XY_STEP = 0.055
 
         if lateral_dist > 0.02:
             # Stage 1: move only in XY at fixed box_approach_z.

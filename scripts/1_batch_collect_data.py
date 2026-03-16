@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
 from so101_inverse_kinematics import get_inverse_kinematics
 from so101_mujoco_utils import move_to_pose
 
@@ -43,6 +43,7 @@ class CollectConfig:
     delete_existing_dataset: bool = False
     robot_type: str = 'so101'
     fps: int = 20
+    control_hz: int = 40
     image_size: int = 256
     image_writer_threads: int = 10
     image_writer_processes: int = 5
@@ -101,6 +102,7 @@ def parse_args():
     parser.add_argument("--delete-existing-dataset", action=argparse.BooleanOptionalAction, default=merged_defaults["delete_existing_dataset"])
     parser.add_argument("--robot-type", default=merged_defaults["robot_type"])
     parser.add_argument("--fps", type=int, default=merged_defaults["fps"])
+    parser.add_argument("--control-hz", type=int, default=merged_defaults["control_hz"], help="Control loop rate (higher = faster arm motion)")
     parser.add_argument("--image-size", type=int, default=merged_defaults["image_size"])
     parser.add_argument("--image-writer-threads", type=int, default=merged_defaults["image_writer_threads"])
     parser.add_argument("--image-writer-processes", type=int, default=merged_defaults["image_writer_processes"])
@@ -134,6 +136,7 @@ def parse_args():
         delete_existing_dataset=args.delete_existing_dataset,
         robot_type=args.robot_type,
         fps=args.fps,
+        control_hz=args.control_hz,
         image_size=args.image_size,
         image_writer_threads=args.image_writer_threads,
         image_writer_processes=args.image_writer_processes,
@@ -204,6 +207,8 @@ def validate_config(config):
         raise ValueError("--num-demo must be > 0")
     if config.fps <= 0:
         raise ValueError("--fps must be > 0")
+    if config.control_hz <= 0:
+        raise ValueError("--control-hz must be > 0")
     if config.image_size <= 0:
         raise ValueError("--image-size must be > 0")
     if config.image_writer_threads <= 0:
@@ -446,13 +451,25 @@ class _ViewerSyncAdapter:
 # These are no longer needed as mink handles IK internally
 
 
+def _print_episode_stats(num_success: int, num_failed: int):
+    """Print current success/failure counts and success percentage."""
+    total = num_success + num_failed
+    pct = (100.0 * num_success / total) if total else 0.0
+    print(
+        f"[collect_data] Episodes: {num_success} successful, {num_failed} unsuccessful, "
+        f"{total} total — {pct:.1f}% success"
+    )
+
+
 def collect_demonstrations(env, dataset, config):
     episode_id = 0
     record_flag = True
     frames_in_episode = 0
     success_streak = 0
     success_streak_required = 6
-    
+    num_success = 0
+    num_failed = 0
+
     # CHANGED: Initialize FSM with mink solver
     # Set default joint names for SO101 if not provided
     if config.arm_joint_names is None:
@@ -471,7 +488,7 @@ def collect_demonstrations(env, dataset, config):
 
     while env.env.is_viewer_alive() and episode_id < config.num_demo:
         env.step_env()
-        if env.env.loop_every(HZ=20):
+        if env.env.loop_every(HZ=config.control_hz):
             success_now = bool(env.check_success())
             success_streak = (success_streak + 1) if success_now else 0
             done = success_streak >= success_streak_required
@@ -485,7 +502,9 @@ def collect_demonstrations(env, dataset, config):
                 if frames_in_episode > 0:
                     dataset.save_episode()
                     episode_id += 1
+                    num_success += 1
                     print(f"[collect_data] Episode {episode_id-1} saved successfully (success detected)")
+                    _print_episode_stats(num_success, num_failed)
                 else:
                     dataset.clear_episode_buffer()
                     print("[collect_data] Success detected before recording frames; reset without saving.")
@@ -521,11 +540,13 @@ def collect_demonstrations(env, dataset, config):
             # episode as failed and reset.
             if (fsm["phase"] == len(PHASES) - 1) and fsm["tick"] > 80:
                 dataset.clear_episode_buffer()
+                num_failed += 1
                 print("[collect_data] Retract timeout — episode failed, resetting.")
+                _print_episode_stats(num_success, num_failed)
                 env.reset(seed=config.seed)
                 frames_in_episode = 0
                 success_streak = 0
-                
+
                 # CHANGED: Re-initialize FSM after reset
                 fsm = setup_so101_controller(
                     env=env,
@@ -560,6 +581,11 @@ def collect_demonstrations(env, dataset, config):
                 frames_in_episode += 1
 
             env.render(teleop=False)
+
+    # Final summary when collection ends (target reached or viewer closed)
+    if (num_success + num_failed) > 0:
+        print("[collect_data] ---------- Final episode summary ----------")
+        _print_episode_stats(num_success, num_failed)
 
 
 def cleanup_dataset_images(dataset, cleanup_images):
