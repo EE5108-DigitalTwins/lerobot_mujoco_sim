@@ -22,7 +22,9 @@ from mujoco_env.ik import solve_ik
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from so101_inverse_kinematics import get_inverse_kinematics
 from so101_mujoco_utils import move_to_pose
-from scripted_fsm_controller import make_fsm, fsm_step
+
+# CHANGED: Import mink-based FSM instead of original
+from scripted_fsm_controller import setup_so101_controller, fsm_step, PHASES
 
 
 @dataclass
@@ -44,15 +46,19 @@ class CollectConfig:
     image_writer_threads: int = 10
     image_writer_processes: int = 5
     cleanup_images: bool = True
-    spawn_x_min: float = 0.01
-    spawn_x_max: float = 0.08
-    spawn_y_min: float = 0.001
-    spawn_y_max: float = 0.05
+    spawn_x_min: float = 0.21
+    spawn_x_max: float = 0.27
+    spawn_y_min: float = 0.04
+    spawn_y_max: float = 0.16
     spawn_z_min: float = 0.815
     spawn_z_max: float = 0.815
     spawn_min_dist: float = 0.01
     spawn_xy_margin: float = 0.0
     spawn_fallback_min_dist: float = 0.1
+    
+    # NEW: Mink-specific configuration
+    ee_site_name: str = 'gripperframe'  # End-effector site name in XML
+    arm_joint_names: list = None  # Will be set based on robot profile
 
 
 def parse_args():
@@ -107,6 +113,10 @@ def parse_args():
     parser.add_argument("--spawn-min-dist", type=float, default=merged_defaults["spawn_min_dist"])
     parser.add_argument("--spawn-xy-margin", type=float, default=merged_defaults["spawn_xy_margin"])
     parser.add_argument("--spawn-fallback-min-dist", type=float, default=merged_defaults["spawn_fallback_min_dist"])
+    
+    # NEW: Mink-specific arguments
+    parser.add_argument("--ee-site-name", default=merged_defaults["ee_site_name"])
+    parser.add_argument("--arm-joint-names", nargs='+', default=None)
 
     args = parser.parse_args()
     config = CollectConfig(
@@ -136,6 +146,9 @@ def parse_args():
         spawn_min_dist=args.spawn_min_dist,
         spawn_xy_margin=args.spawn_xy_margin,
         spawn_fallback_min_dist=args.spawn_fallback_min_dist,
+        # NEW: Mink-specific
+        ee_site_name=args.ee_site_name,
+        arm_joint_names=args.arm_joint_names,
     )
 
     if not os.path.isabs(config.xml_path):
@@ -214,6 +227,52 @@ def validate_config(config):
         raise ValueError("--spawn-xy-margin is too large for x range")
     if 2 * config.spawn_xy_margin >= y_span:
         raise ValueError("--spawn-xy-margin is too large for y range")
+
+
+def enforce_reachable_spawn_workspace(config):
+    if config.env_robot_profile != 'so101':
+        return
+
+    reachable = {
+        'x_min': 0.21,
+        'x_max': 0.27,
+        'y_min': 0.04,
+        'y_max': 0.16,
+    }
+
+    orig = (
+        config.spawn_x_min,
+        config.spawn_x_max,
+        config.spawn_y_min,
+        config.spawn_y_max,
+    )
+
+    config.spawn_x_min = max(config.spawn_x_min, reachable['x_min'])
+    config.spawn_x_max = min(config.spawn_x_max, reachable['x_max'])
+    config.spawn_y_min = max(config.spawn_y_min, reachable['y_min'])
+    config.spawn_y_max = min(config.spawn_y_max, reachable['y_max'])
+
+    if config.spawn_x_min > config.spawn_x_max:
+        mid_x = 0.5 * (reachable['x_min'] + reachable['x_max'])
+        config.spawn_x_min = mid_x
+        config.spawn_x_max = mid_x
+    if config.spawn_y_min > config.spawn_y_max:
+        mid_y = 0.5 * (reachable['y_min'] + reachable['y_max'])
+        config.spawn_y_min = mid_y
+        config.spawn_y_max = mid_y
+
+    now = (
+        config.spawn_x_min,
+        config.spawn_x_max,
+        config.spawn_y_min,
+        config.spawn_y_max,
+    )
+    if now != orig:
+        print(
+            "[collect_data] Clamped SO101 spawn workspace for reachability: "
+            f"x[{orig[0]:.3f},{orig[1]:.3f}] -> [{now[0]:.3f},{now[1]:.3f}], "
+            f"y[{orig[2]:.3f},{orig[3]:.3f}] -> [{now[2]:.3f},{now[3]:.3f}]"
+        )
 
 
 def build_env(config):
@@ -382,49 +441,8 @@ class _ViewerSyncAdapter:
                 return
 
 
-def _ik_joint_targets_rad(target_xyz):
-    target_xyz = np.asarray(target_xyz, dtype=np.float32)
-
-    # Single-shot IK solve: retry offsets are handled in scripted_fsm_controller.plan_ik.
-    ik_solution_deg = get_inverse_kinematics(target_xyz)
-
-    if not ik_solution_deg or not all(v is not None for v in ik_solution_deg.values()):
-        return np.full(5, np.nan, dtype=np.float32)
-
-    q_target = np.array(
-        [
-            ik_solution_deg['shoulder_pan'],
-            ik_solution_deg['shoulder_lift'],
-            ik_solution_deg['elbow_flex'],
-            ik_solution_deg['wrist_flex'],
-            ik_solution_deg['wrist_roll'],
-        ],
-        dtype=np.float32,
-    ) * (np.pi / 180.0)
-
-    if np.any(np.isnan(q_target)):
-        return np.full(5, np.nan, dtype=np.float32)
-
-    return q_target
-
-def _fallback_joint_targets_rad(env, target_xyz):
-    q_current = env.get_joint_state()[: env.n_arm_joints]
-    q_target, _, _ = solve_ik(
-        env=env.env,
-        joint_names_for_ik=env.joint_names,
-        body_name_trgt=env.tcp_body_name,
-        q_init=q_current,
-        p_trgt=np.asarray(target_xyz, dtype=np.float32),
-        R_trgt=None,
-        max_ik_tick=50,
-        ik_stepsize=0.1,
-        ik_eps=0.01,
-        ik_th=np.radians(5.0),
-        render=False,
-        verbose_warning=False,
-        restore_state=False,
-    )
-    return np.asarray(q_target, dtype=np.float32)
+# REMOVED: Old IK functions (_ik_joint_targets_rad, _fallback_joint_targets_rad)
+# These are no longer needed as mink handles IK internally
 
 
 def collect_demonstrations(env, dataset, config):
@@ -433,10 +451,22 @@ def collect_demonstrations(env, dataset, config):
     frames_in_episode = 0
     success_streak = 0
     success_streak_required = 6
-    fsm = make_fsm()
-    fsm["traj_start"] = None
-    fsm["traj_target"] = None
-    fsm["traj_progress"] = 0.0
+    
+    # CHANGED: Initialize FSM with mink solver
+    # Set default joint names for SO101 if not provided
+    if config.arm_joint_names is None:
+        # SO-101 arm joint names (matches y_env.py robot_profile='so101')
+        arm_joint_names = ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll']
+    else:
+        arm_joint_names = config.arm_joint_names
+    
+    fsm = setup_so101_controller(
+        env=env,
+        arm_joint_names=arm_joint_names,
+        ee_site_name=config.ee_site_name
+    )
+    
+    # fsm already includes traj_start/traj_target from setup function
 
     while env.env.is_viewer_alive() and episode_id < config.num_demo:
         env.step_env()
@@ -463,36 +493,45 @@ def collect_demonstrations(env, dataset, config):
                 record_flag = True
                 frames_in_episode = 0
                 success_streak = 0
-                fsm = make_fsm()
-                fsm["traj_start"] = None
-                fsm["traj_target"] = None
-                fsm["traj_progress"] = 0.0
+                
+                # CHANGED: Re-initialize FSM after reset
+                fsm = setup_so101_controller(
+                    env=env,
+                    arm_joint_names=arm_joint_names,
+                    ee_site_name=config.ee_site_name
+                )
 
             prev_joint_state = env.get_joint_state()
             prev_phase = fsm["phase"]
 
+            # CHANGED: fsm_step now only needs env, fsm, and helper functions
+            # Removed ik_fn and fallback_ik_fn arguments
             action = fsm_step(
-                env,
-                fsm,
+                env=env,
+                fsm=fsm,
                 get_ee_xyz_fn=_get_ee_xyz,
                 cube_pos_fn=get_green_cube_location,
-                ik_fn=_ik_joint_targets_rad,
-                fallback_ik_fn=_fallback_joint_targets_rad,
+                # ik_fn and fallback_ik_fn no longer needed - mink handles internally
             )
 
             if fsm["phase"] != prev_phase:
                 print(f"[PHASE CHANGE] {prev_phase} -> {fsm['phase']} at frame {frames_in_episode}")
 
-            if fsm["phase"] == 7 and fsm["tick"] > 80:
+            # If we spend too long in the final "return_home" phase, treat the
+            # episode as failed and reset.
+            if (fsm["phase"] == len(PHASES) - 1) and fsm["tick"] > 80:
                 dataset.clear_episode_buffer()
                 print("[collect_data] Retract timeout — episode failed, resetting.")
                 env.reset(seed=config.seed)
                 frames_in_episode = 0
                 success_streak = 0
-                fsm = make_fsm()
-                fsm["traj_start"] = None
-                fsm["traj_target"] = None
-                fsm["traj_progress"] = 0.0
+                
+                # CHANGED: Re-initialize FSM after reset
+                fsm = setup_so101_controller(
+                    env=env,
+                    arm_joint_names=arm_joint_names,
+                    ee_site_name=config.ee_site_name
+                )
 
             env.step(action)
 
@@ -533,6 +572,7 @@ def main():
     config = parse_args()
     config = resolve_robot_scene_defaults(config)
     validate_config(config)
+    enforce_reachable_spawn_workspace(config)
     print(f"[collect_data] env_robot_profile={config.env_robot_profile}, xml_path={config.xml_path}")
     print_controls(config)
     env = build_env(config)

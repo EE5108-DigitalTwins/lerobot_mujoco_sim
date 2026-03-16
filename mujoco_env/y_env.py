@@ -156,6 +156,16 @@ class SimpleEnv:
         self.init_viewer()
         self.reset(seed)
 
+    @property
+    def model(self):
+        """Expose the underlying MuJoCo model directly."""
+        return self.env.model
+
+    @property
+    def data(self):
+        """Expose the underlying MuJoCo data directly."""
+        return self.env.data
+
     def _key_is_down(self, key):
         if self.env.is_key_pressed_repeat(key=key):
             return True
