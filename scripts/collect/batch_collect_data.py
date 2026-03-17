@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
+from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
 from so101.inverse_kinematics import get_inverse_kinematics
 from so101.mujoco_utils import move_to_pose
 
@@ -33,7 +33,7 @@ class CollectConfig:
     repo_name: str = 'so101_pnp'
     num_demo: int = 1
     root: str = str(PROJECT_ROOT / 'data' / 'demo_data_so101')
-    task_name: str = 'Put green block in the bin'
+    task_name: str = 'Put blue block in the bin'
     xml_path: str = str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml')
     # Target object to pick: blue block (body_obj_block_2 in obj_blocks.xml)
     pick_body_name: str = 'body_obj_block_2'
@@ -57,6 +57,7 @@ class CollectConfig:
     spawn_min_dist: float = 0.01
     spawn_xy_margin: float = 0.0
     spawn_fallback_min_dist: float = 0.1
+    headless: bool = False
     
     # NEW: Mink-specific configuration
     ee_site_name: str = 'gripperframe'  # End-effector site name in XML
@@ -120,6 +121,12 @@ def parse_args():
     # NEW: Mink-specific arguments
     parser.add_argument("--ee-site-name", default=merged_defaults["ee_site_name"])
     parser.add_argument("--arm-joint-names", nargs='+', default=None)
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=merged_defaults.get("headless", False),
+        help="Run without an on-screen viewer (no window rendering).",
+    )
 
     args = parser.parse_args()
     config = CollectConfig(
@@ -150,6 +157,7 @@ def parse_args():
         spawn_min_dist=args.spawn_min_dist,
         spawn_xy_margin=args.spawn_xy_margin,
         spawn_fallback_min_dist=args.spawn_fallback_min_dist,
+        headless=args.headless,
         # NEW: Mink-specific
         ee_site_name=args.ee_site_name,
         arm_joint_names=args.arm_joint_names,
@@ -567,6 +575,17 @@ def collect_demonstrations(env, dataset, config):
             agent_image, wrist_image = resize_images(agent_image, wrist_image, config.image_size)
 
             if record_flag:
+                # LeRobotDataset writes images to:
+                #   images/<feature_name>/episode_XXXXXX/frame_YYYYYY.png
+                # In headless mode the simulation loop can run fast enough that the
+                # image writer process attempts to write before the per-episode
+                # directory exists. Create it explicitly on first frame.
+                if frames_in_episode == 0:
+                    episode_dir = f"episode_{episode_id + 1:06d}"
+                    images_root = dataset.root / "images"
+                    for feature_name in ["observation.image", "observation.wrist_image"]:
+                        os.makedirs(images_root / feature_name / episode_dir, exist_ok=True)
+
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
@@ -575,12 +594,13 @@ def collect_demonstrations(env, dataset, config):
                         "action": joint_q,
                         "obj_init": env.obj_init_pose,
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
+                        "task": config.task_name,
                     },
-                    task=config.task_name,
                 )
                 frames_in_episode += 1
 
-            env.render(teleop=False)
+            if not config.headless:
+                env.render(teleop=False)
 
     # Final summary when collection ends (target reached or viewer closed)
     if (num_success + num_failed) > 0:
@@ -605,19 +625,33 @@ def main():
     print_controls(config)
     env = build_env(config)
 
-    env.env.viewer.cam.lookat[0] = 0.35
-    env.env.viewer.cam.lookat[1] = 0.0
-    env.env.viewer.cam.lookat[2] = 0.85
-    env.env.viewer.cam.distance = 1.5
-    env.env.viewer.cam.azimuth = 180
-    env.env.viewer.cam.elevation = -30
+    if not config.headless:
+        env.env.viewer.cam.lookat[0] = 0.35
+        env.env.viewer.cam.lookat[1] = 0.0
+        env.env.viewer.cam.lookat[2] = 0.85
+        env.env.viewer.cam.distance = 1.5
+        env.env.viewer.cam.azimuth = 180
+        env.env.viewer.cam.elevation = -30
 
     dataset = create_or_load_dataset(config)
+
+    # Ensure base image feature directories exist before any PNG writes.
+    images_root = dataset.root / 'images'
+    for feature_name in ['observation.image', 'observation.wrist_image']:
+        os.makedirs(images_root / feature_name, exist_ok=True)
 
     try:
         collect_demonstrations(env, dataset, config)
     finally:
-        env.env.close_viewer()
+        # IMPORTANT: finalize the dataset so that all parquet/video writers
+        # are closed and v3 metadata is flushed before any cleanup happens.
+        try:
+            dataset.finalize()
+        except Exception:
+            # If finalize fails, still attempt to close viewer and clean up images.
+            pass
+        if not config.headless:
+            env.env.close_viewer()
         cleanup_dataset_images(dataset, config.cleanup_images)
 
 

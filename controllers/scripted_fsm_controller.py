@@ -25,14 +25,16 @@ GRASP_X_OFFSET = -0.005       # small XY tweak to center over block
 GRASP_Y_OFFSET = 0.0
 APPROACH_Z_OFFSET = 0.075     # hover height above block / box
 PLACE_Z_OFFSET = 0.040        # depth when placing in box
+# Max Z step per tick when descending onto block (m/tick).
+DESCEND_Z_STEP = 0.0035
 # Max Z step per tick when descending into bin (avoids overshoot/oscillation)
-PLACE_DESCEND_Z_STEP = 0.028
+PLACE_DESCEND_Z_STEP = 0.0028
 # When within this distance in place_in_box, scale down dq to avoid overshoot/oscillation
 PLACE_DAMP_DIST = 0.04
 FSM_DEBUG = True
 FSM_DEBUG_EVERY = 5
 # Max joint delta per control step (rad/tick); larger = faster motion
-MAX_DQ_STEP = 1.5
+MAX_DQ_STEP = 1.0
 
 # Orientation policy: only yaw (Z-rotation) is allowed to change.
 LOCK_XY_ROTATION = True       # keep roll/pitch fixed, free yaw
@@ -129,6 +131,14 @@ def topdown_axis_error(q_wxyz: np.ndarray) -> float:
     return float(np.arccos(cosang))
 
 PHASES = [
+    # 0) On episode start, move from stow to a safe "home" pose
+    dict(
+        name="stow_to_home",
+        target=None,          # filled from fsm["home_xyz"]
+        gripper=1.0,
+        tol=0.04,
+        timeout=250,
+    ),
     # 1) Move above the block with gripper pointing down, yaw-only rotation
     dict(
         name="above_block",
@@ -712,7 +722,7 @@ def fsm_step(
     # -------------------------------------------------
     # Compute waypoint and solve IK with mink
     # -------------------------------------------------
-    waypoint = next_ee_waypoint(env, fsm, target_xyz, get_ee_xyz_fn)
+    waypoint = next_ee_waypoint(env, target_xyz, get_ee_xyz_fn, speed=6.0)
 
     # During recovery-lift, move strictly vertically at current XY.
     if fsm.get("recover_lift_pending") and phase_cfg["name"] == "approach_cube":
@@ -994,9 +1004,15 @@ def setup_so101_controller(env, arm_joint_names=None, ee_site_name=DEFAULT_EE_SI
     resolved_ee_site_name = resolve_ee_site_name(env, ee_site_name)
     fsm["ee_site_name"] = resolved_ee_site_name
 
-    # Record "home" Cartesian pose from current end-effector position
-    site_id = env.model.site(resolved_ee_site_name).id
-    fsm["home_xyz"] = env.data.site_xpos[site_id].copy().astype(np.float32)
+    # Compute a safe "home" Cartesian pose (used for unstow + return_home).
+    # For SO101 resets, the arm starts stowed; we want a neutral pose over the workspace
+    # before attempting pick-and-place.
+    cube_xyz, bin_xyz = env.get_obj_pose()
+    cube_xyz = np.asarray(cube_xyz, dtype=np.float32)
+    bin_xyz = np.asarray(bin_xyz, dtype=np.float32)
+    home_xy = 0.5 * (cube_xyz[:2] + bin_xyz[:2])
+    home_z = float(max(cube_xyz[2], bin_xyz[2]) + APPROACH_Z_OFFSET + 0.05)
+    fsm["home_xyz"] = np.asarray([home_xy[0], home_xy[1], home_z], dtype=np.float32)
 
     # Initialize and attach mink solver
     fsm["mink_solver"] = init_mink_for_so101(
@@ -1018,7 +1034,7 @@ def _phase_target_xyz(fsm, phase_cfg, cube_xyz, bin_xyz):
     """
     name = phase_cfg["name"]
     if phase_cfg["target"] is None:
-        if name == "return_home":
+        if name in {"stow_to_home", "return_home"}:
             # Go back to recorded home pose
             return np.asarray(fsm["home_xyz"], dtype=np.float32)
         # For pure timing phases ("grip") stay where we are

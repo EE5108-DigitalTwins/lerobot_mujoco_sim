@@ -7,14 +7,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Runtime image for capture + inference (no local training stack).
 # Notes:
 # - Still GPU-enabled for MuJoCo EGL + PyTorch CUDA wheels.
-# - Avoids heavy dev tooling (build-essential, python-dev, Jupyter, etc.).
+# - Avoids heavy dev tooling (Jupyter, etc.). Some minimal build deps are
+#   installed temporarily to build `evdev` when installing `lerobot`.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
-    git \
+    software-properties-common \
     ca-certificates \
+    curl \
+    git \
+    git-lfs \
+    build-essential \
+    python3-venv \
     ffmpeg \
     unzip \
     libgl1 \
@@ -31,22 +34,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxi6 \
     libxcursor1 \
     libxkbcommon0 \
+    libsm6 \
+    libxmu6 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+# Ubuntu 22.04 ships Python 3.10, but `lerobot` requires Python >= 3.12.
+RUN add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+
+# Hugging Face CLI (for `huggingface-cli login`, uploads, etc.)
+RUN curl -LsSf https://hf.co/cli/install.sh | bash
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /workspace
 
-RUN python -m pip install --upgrade pip setuptools wheel
+RUN python -m ensurepip --upgrade && python -m pip install --upgrade pip setuptools wheel
 
 # PyTorch CUDA (inference)
-RUN pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir \
     torch==2.6.0 \
     torchvision==0.21.0 \
     --index-url https://download.pytorch.org/whl/cu124
 
 # Core runtime deps for MuJoCo + LeRobot dataset IO + inference
-RUN pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir \
     mujoco==3.1.6 \
     numpy \
     Pillow \
@@ -60,8 +77,15 @@ RUN pip install --no-cache-dir \
     datasets==3.4.1 \
     transformers==4.50.3
 
-RUN pip install --no-cache-dir \
-    "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+# LeRobot from main (matches Dockerfile for consistency)
+RUN python -m pip install --no-cache-dir \
+  "git+https://github.com/huggingface/lerobot.git@main#egg=lerobot"
+
+# Remove build dependencies to keep runtime image smaller.
+RUN apt-get update && apt-get purge -y --auto-remove \
+    build-essential \
+    python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . /workspace
 

@@ -5,11 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-dev \
+    software-properties-common \
     python3-venv \
-    python3-tk \
+    curl \
     git \
     git-lfs \
     ca-certificates \
@@ -35,15 +33,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxmu6 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+# Ubuntu 22.04 ships Python 3.10, but `lerobot` requires Python >= 3.12.
+RUN add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    python3.12-tk \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+
+# Hugging Face CLI (for `huggingface-cli login`, uploads, etc.)
+RUN curl -LsSf https://hf.co/cli/install.sh | bash
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /workspace
 
 # Python dependencies (consolidated; no separate requirements.txt)
-RUN python -m pip install --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+RUN python -m ensurepip --upgrade && python -m pip install --upgrade pip setuptools wheel
+RUN python -m pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
     --index-url https://download.pytorch.org/whl/cu124
-RUN pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir \
     mujoco==3.1.6 \
     pyautogui \
     matplotlib \
@@ -59,9 +70,15 @@ RUN pip install --no-cache-dir \
     safetensors==0.5.3 \
     datasets==3.4.1 \
     transformers==4.50.3
-RUN pip install --no-cache-dir \
-    "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
-RUN pip install --no-cache-dir jupyterlab ipykernel ipywidgets
+
+    #RUN pip install --no-cache-dir \
+#    "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+
+# LeRobot from main (matches Dockerfile.runtime for consistency)
+RUN python -m pip install --no-cache-dir \
+  "git+https://github.com/huggingface/lerobot.git@main#egg=lerobot"
+
+RUN python -m pip install --no-cache-dir jupyterlab ipykernel ipywidgets
 
 COPY . /workspace
 

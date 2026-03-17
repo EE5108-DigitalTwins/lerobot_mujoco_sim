@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--pick-body-name", default="body_obj_block_2")
     p.add_argument("--place-body-name", default="body_obj_bin")
-    p.add_argument("--task", default="Put green block in the bin")
+    p.add_argument("--task", default="Put blue block in the bin")
     p.add_argument("--hz", type=int, default=20, help="Control loop rate in Hz.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(

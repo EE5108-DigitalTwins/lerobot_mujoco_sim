@@ -2,7 +2,7 @@ seed: null
 repo_name: so101_pnp
 num_demo: 1
 root: ./data/demo_data_so101
-task_name: Put green block in the bin
+task_name: Put blue block in the bin
 xml_path: ./asset/scene_so101_y.xml
 # Target object to pick: blue block (see obj_blocks.xml)
 pick_body_name: body_obj_block_2

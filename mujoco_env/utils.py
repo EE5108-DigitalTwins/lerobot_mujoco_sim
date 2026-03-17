@@ -1,15 +1,27 @@
 import os
-import pyautogui
 import sys
 import time
 import numpy as np
 # import cvxpy as cp
 # import shapely as sp
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-import tkinter as tk
+try:
+    import pyautogui  # type: ignore
+except Exception:  # optional dependency (not needed for headless/runtime)
+    pyautogui = None
+
+try:
+    import matplotlib as mpl  # type: ignore
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # optional dependency
+    mpl = None
+    plt = None
+
+try:
+    import tkinter as tk  # type: ignore
+except Exception:  # optional dependency
+    tk = None
+
 import xml.etree.ElementTree as ET
-from scipy.spatial.distance import cdist
 from PIL import Image
 from xml.dom import minidom
 from functools import partial
@@ -86,6 +98,8 @@ def get_colors(n_color=10,cmap_name='gist_rainbow',alpha=1.0):
     """ 
         Get diverse colors
     """
+    if plt is None:
+        raise ImportError("matplotlib is required for get_colors(), but it's not installed.")
     colors = [plt.get_cmap(cmap_name)(idx) for idx in np.linspace(0,1,n_color)]
     for idx in range(n_color):
         color = colors[idx]
@@ -121,8 +135,11 @@ def sample_xyzs(
             z_rand = np.random.uniform(low=z_range[0],high=z_range[1])
             xyz = np.array([x_rand,y_rand,z_rand])
             if p_idx == 0: break
-            devc = cdist(xyz.reshape((-1,3)),xyzs[:p_idx,:].reshape((-1,3)),'euclidean')
-            if devc.min() > min_dist: break # minimum distance between objects
+            # Avoid scipy dependency: compute pairwise distances with numpy.
+            deltas = xyzs[:p_idx, :] - xyz.reshape(1, 3)
+            dists = np.sqrt(np.sum(deltas * deltas, axis=1))
+            if float(dists.min()) > float(min_dist):
+                break  # minimum distance between objects
         xyzs[p_idx,:] = xyz
     return xyzs
 
@@ -226,8 +243,10 @@ def sample_xys(n_sample=1,x_range=[0,1],y_range=[0,1],min_dist=0.1,xy_margin=0.0
             y_rand = np.random.uniform(low=y_range[0]+xy_margin,high=y_range[1]-xy_margin)
             xy = np.array([x_rand,y_rand])
             if p_idx == 0: break
-            devc = cdist(xy.reshape((-1,3)),xys[:p_idx,:].reshape((-1,3)),'euclidean')
-            if devc.min() > min_dist: break # minimum distance between objects
+            deltas = xys[:p_idx, :] - xy.reshape(1, 2)
+            dists = np.sqrt(np.sum(deltas * deltas, axis=1))
+            if float(dists.min()) > float(min_dist):
+                break  # minimum distance between objects
         xys[p_idx,:] = xy
     return xys
 
@@ -235,6 +254,8 @@ def save_png(img,png_path,verbose=False):
     """ 
         Save image
     """
+    if plt is None:
+        raise ImportError("matplotlib is required for save_png(), but it's not installed.")
     directory = os.path.dirname(png_path)
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -422,8 +443,23 @@ def get_monitor_size():
     """ 
         Get monitor size
     """
-    w,h = pyautogui.size()
-    return w,h
+    # `pyautogui` is optional (not installed in runtime/headless images).
+    # Fall back to a sensible default when unavailable.
+    if pyautogui is not None:
+        w, h = pyautogui.size()
+        return int(w), int(h)
+
+    # Allow override via env vars (useful in Docker/headless setups).
+    env_w = os.environ.get("MONITOR_WIDTH")
+    env_h = os.environ.get("MONITOR_HEIGHT")
+    if env_w and env_h:
+        try:
+            return int(env_w), int(env_h)
+        except ValueError:
+            pass
+
+    # Default: 1920x1080
+    return 1920, 1080
     
 def get_xml_string_from_path(xml_path):
     # Parse the XML file

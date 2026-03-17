@@ -30,7 +30,7 @@ import shutil
 from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 @dataclass
 class CollectConfig:
@@ -38,7 +38,7 @@ class CollectConfig:
     repo_name: str = 'so101_pnp'
     num_demo: int = 1
     root: str = str(PROJECT_ROOT / 'data' / 'demo_data_so101')
-    task_name: str = 'Put green block in the bin'
+    task_name: str = 'Put blue block in the bin'
     xml_path: str = str(PROJECT_ROOT / 'asset' / 'scene_so101_y.xml')
     # Target object to pick: blue block (body_obj_block_2 in obj_blocks.xml)
     pick_body_name: str = 'body_obj_block_2'
@@ -412,8 +412,8 @@ def collect_demonstrations(env, dataset, config):
                         # Store the initial block spawn configuration so that
                         # replay can reconstruct the exact scene.
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
+                        "task": config.task_name,
                     },
-                    task=config.task_name,
                 )
                 frames_in_episode += 1
 
@@ -441,6 +441,13 @@ def main():
     try:
         collect_demonstrations(env, dataset, config)
     finally:
+        # IMPORTANT: finalize the dataset so that all parquet/video writers
+        # are closed and v3 metadata is flushed before any cleanup happens.
+        try:
+            dataset.finalize()
+        except Exception:
+            # If finalize fails, still attempt to close viewer and clean up images.
+            pass
         env.env.close_viewer()
         cleanup_dataset_images(dataset, config.cleanup_images)
 
