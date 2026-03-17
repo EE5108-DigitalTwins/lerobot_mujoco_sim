@@ -11,7 +11,7 @@ from io import BytesIO
 from PIL import Image
 
 # Make project code importable
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from mujoco_env.y_env import SimpleEnv  # noqa: E402

@@ -4,13 +4,11 @@ import time
 import mujoco
 import mujoco.viewer
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-sys.path.insert(0, str(SCRIPT_DIR))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from so101_mujoco_utils import set_initial_pose, send_position_command, move_to_pose, hold_position
-from so101_forward_kinematics import get_forward_kinematics
+from so101.mujoco_utils import set_initial_pose, send_position_command, move_to_pose, hold_position
+from so101.forward_kinematics import get_forward_kinematics
 import numpy as np
 
 xml_path = PROJECT_ROOT / 'asset' / 'so_arm100' / 'SO101' / 'scene.xml'

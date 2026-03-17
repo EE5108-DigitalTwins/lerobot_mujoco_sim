@@ -1,5 +1,5 @@
 import numpy as np
-from so101_forward_kinematics import get_forward_kinematics, get_gw1, get_g12, get_g23, get_g34
+from .forward_kinematics import get_forward_kinematics, get_gw1, get_g12, get_g23, get_g34
 
 # ---------------------------------------------------------------------------
 # Robot constants
@@ -266,7 +266,7 @@ def get_inverse_kinematics(target_position, target_orientation=None):
 # Verification
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
-    from so101_forward_kinematics import get_forward_kinematics
+    from .forward_kinematics import get_forward_kinematics
 
     known_config = {
         'shoulder_pan':  -45.0,

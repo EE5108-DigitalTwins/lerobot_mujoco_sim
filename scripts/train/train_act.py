@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # Get project root directory (parent of scripts/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
@@ -17,6 +17,7 @@ from lerobot.common.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType
 from lerobot.common.datasets.factory import resolve_delta_timestamps
 import torchvision
+import json
 
 device = torch.device("cuda")
 
@@ -109,7 +110,46 @@ while not done:
             break
 
 # Save the policy to disk.
-policy.save_pretrained(str(PROJECT_ROOT / 'checkpoints' / 'act_y'))
+checkpoint_dir = PROJECT_ROOT / "checkpoints" / "act_y"
+policy.save_pretrained(str(checkpoint_dir))
+
+# Save dataset metadata/stats alongside the checkpoint so deployment does not
+# require access to the original dataset directory.
+def _to_jsonable(x):
+    if isinstance(x, (str, int, float, bool)) or x is None:
+        return x
+    if isinstance(x, (list, tuple)):
+        return [_to_jsonable(v) for v in x]
+    if isinstance(x, dict):
+        return {str(k): _to_jsonable(v) for k, v in x.items()}
+    try:
+        import numpy as _np
+
+        if isinstance(x, _np.ndarray):
+            return x.tolist()
+        if isinstance(x, (_np.integer,)):
+            return int(x)
+        if isinstance(x, (_np.floating,)):
+            return float(x)
+    except Exception:
+        pass
+    return str(x)
+
+
+deploy_metadata = {
+    "dataset_repo_id": "so101_pnp",
+    "features": dataset_metadata.features,
+    "stats": dataset_metadata.stats,
+    "act_config": {
+        "chunk_size": 10,
+        "n_action_steps": 10,
+    },
+}
+
+(checkpoint_dir / "deploy_metadata.json").write_text(
+    json.dumps(_to_jsonable(deploy_metadata), indent=2, sort_keys=True),
+    encoding="utf-8",
+)
 
 # ## Test Inference
 # To evaluate the policy on the dataset, you can calculate the error between ground-truth actions from the dataset.

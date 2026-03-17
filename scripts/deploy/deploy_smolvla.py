@@ -1,70 +1,39 @@
-# Deploy Trained pi_0 Policy
+# Deploy Trained SmolVLA Policy
 # Deploy trained policy in simulation.
 
 # Install dependencies (run once if needed):
-# pip install pytest
 # pip install transformers==4.50.3
-
-# # Train pi0 and Deploy
+# pip install num2words
+# pip install accelerate
+# pip install safetensors>=0.4.3
 
 # ## [Optional] Download Dataset
 # If you want to use the collected dataset, please download it from Hugging Face.
 # !git clone https://huggingface.co/datasets/Jeongeun/so101_pnp_language
 
-# ## Step 1. Change the configuration file, pi0_so101.yaml
-#
-# pi0_so101.yaml file:
-#
-# dataset:
-#   repo_id: so101_pnp
-#   root: ./so101_pnp
-# policy:
-#   type : pi0
-#   chunk_size: 5
-#   n_action_steps: 5
-# save_checkpoint: true
-# output_dir: ../checkpoints/pi0_so101
-# batch_size: 16
-# job_name : pi0_so101
-# resume: false
-# seed : 42
-# num_workers: 8
-# steps: 20_000
-# eval_freq: -1 # No evaluation
-# log_freq: 50
-# save_checkpoint: true
-# save_freq: 5_000
-# use_policy_training_preset: true
-#
-# wandb:
-#   enable: true
-#   project: pi0_so101
-#   entity: <YOUR ENTITY for wandb>
-#   disable_artifact: true
-
-# ## Step 2. Train Model.
-# The code is tested on A100
-# Run: python train_model.py --config_path pi0_so101.yaml
+# ## Step 2. Train Model
+# Run: python train_model.py --config_path smolvla_so101.yaml
 
 # ## Step 3. Deploy
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Get project root directory (parent of scripts/)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 import numpy as np
 from lerobot.common.datasets.utils import write_json, serialize_dict
-from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
-from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
+from lerobot.common.policies.smolvla.configuration_smolvla import SmolVLAConfig
+from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.configs.types import FeatureType
 from lerobot.common.datasets.factory import resolve_delta_timestamps
 from lerobot.common.datasets.utils import dataset_to_policy_features
 import torch
 from PIL import Image
 import torchvision
-
-# ### Load Policy
 
 device = 'cuda'
 
@@ -78,16 +47,14 @@ input_features = {key: ft for key, ft in features.items() if key not in output_f
 # Policies are initialized with a configuration class, in this case `DiffusionConfig`. For this example,
 # we'll just use the defaults and so no arguments other than input/output features need to be passed.
 # Temporal ensemble to make smoother trajectory predictions
-cfg = PI0Config(input_features=input_features, output_features=output_features, chunk_size=5, n_action_steps=5)
+cfg = SmolVLAConfig(input_features=input_features, output_features=output_features, chunk_size=5, n_action_steps=5)
 delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
 
 # We can now instantiate our policy with this config and the dataset stats.
-policy = PI0Policy.from_pretrained(str(PROJECT_ROOT / 'checkpoints' / 'pi0_so101' / 'checkpoints' / 'last' / 'pretrained_model'), dataset_stats=dataset_metadata.stats)
+policy = SmolVLAPolicy.from_pretrained(str(PROJECT_ROOT / 'checkpoints' / 'smolvla_so101' / 'checkpoints' / 'last' / 'pretrained_model'), dataset_stats=dataset_metadata.stats)
 # You can load the trained policy from hub if you don't have the resources to train it.
-# policy = PI0Policy.from_pretrained("Jeongeun/so101_pnp_pi0", config=cfg, dataset_stats=dataset_metadata.stats)
+# policy = SmolVLAPolicy.from_pretrained("Jeongeun/so101_pnp_smolvla", config=cfg, dataset_stats=dataset_metadata.stats)
 policy.to(device)
-
-# ### Deploy Policy
 
 from mujoco_env.y_env2 import SimpleEnv2
 xml_path = str(PROJECT_ROOT / 'asset' / 'scene_y2.xml')
@@ -152,6 +119,6 @@ while PnPEnv.env.is_viewer_alive():
 
 # [Optional] Push policy to Hugging Face Hub
 # policy.push_to_hub(
-#     repo_id='Jeongeun/so101_pnp_pi0',
+#     repo_id='Jeongeun/so101_pnp_smolvla',
 #     commit_message='Add trained policy for PnP task',
 # )

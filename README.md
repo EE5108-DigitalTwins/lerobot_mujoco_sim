@@ -10,7 +10,6 @@ This repository contains minimal examples for collecting demonstration data and 
 ```
 lerobot-mujoco-tutorial/
 ├── README.md               # This file
-├── requirements.txt        # Python dependencies
 ├── docker-compose.yml      # Docker configuration
 ├── Dockerfile              # Docker image definition
 ├── asset/                  # MuJoCo scene files and robot models
@@ -40,17 +39,29 @@ lerobot-mujoco-tutorial/
 │   ├── 6.visualize_data.ipynb
 │   ├── 7.pi0.ipynb
 │   └── 8.smolvla.ipynb
-├── scripts/             # Python scripts
-│   ├── 1.collect_data.py
-│   ├── 1.scripted_demo.py      # NEW: Automated demo generation
-│   ├── 2.visualize_data.py
-│   ├── 3.train.py
-│   ├── 4.deploy.py
-│   ├── 5.language_env.py
-│   ├── 6.visualize_data_language.py
-│   ├── 7.pi0_deploy.py
-│   ├── 8.smolvla_deploy.py
-│   └── train_model.py
+├── scripts/             # Runnable entrypoints (grouped by area)
+│   ├── collect/
+│   │   ├── batch_collect_data.py
+│   │   └── manual_collect_data.py
+│   ├── visualize/
+│   │   ├── visualize_data.py
+│   │   └── visualize_data_language.py
+│   ├── train/
+│   │   ├── train_act.py
+│   │   └── train_model.py
+│   ├── deploy/
+│   │   ├── deploy_act.py
+│   │   ├── deploy_pi0.py
+│   │   └── deploy_smolvla.py
+│   ├── demos/
+│   │   ├── so101_pick_and_place.py
+│   │   ├── so101_geometric_fk.py
+│   │   └── so101_geometric_ik.py
+│   ├── tests/
+│   │   └── test_parquet.py
+│   └── language_env.py
+├── so101/              # SO-101 kinematics + utilities (library)
+├── controllers/        # Controllers (e.g. Mink-based FSM)
 └── third_party/        # Third-party code
     └── SO-ARM100/
 ```
@@ -72,20 +83,43 @@ lerobot-mujoco-tutorial/
 - [License](#license)
 
 ## Installation
-We have tested our environment on python 3.10. 
+We have tested our environment on python 3.10.
 
-I do **not** recommend installing lerobot package with `pip install lerobot`. This causes errors. 
+### Docker (recommended)
 
-Install mujoco package dependencies and lerobot
-```
-pip install -r requirements.txt
-```
-Make sure your mujoco version is **3.1.6**.
+There are two Docker images:
 
-Unzip the asset
+- **Training/dev** (`Dockerfile`): includes Jupyter + extra Python deps for local training and experimentation.
+- **Runtime (capture + inference)** (`Dockerfile.runtime`): smaller image intended for dataset capture and policy inference (no Jupyter, fewer deps).
+
+Both pin CUDA, MuJoCo, PyTorch, and the LeRobot git dependency for repeatable runs.
+
+Build from `lerobot_mujoco_sim/`:
+
+```bash
+docker build -t lerobot_mujoco_sim:train -f Dockerfile .
+docker build -t lerobot_mujoco_sim:runtime -f Dockerfile.runtime .
 ```
+
+Run an interactive container (GPU):
+
+```bash
+docker run --rm -it --gpus all -v "$PWD:/workspace" lerobot_mujoco_sim:runtime
+```
+
+If you use MuJoCo’s interactive viewer from inside Docker, you may need to pass through your display (X11/Wayland) depending on your setup.
+
+### Local install (optional)
+
+If installing locally, replicate the `pip install` steps from the Dockerfile (PyTorch with CUDA 12.4 index, then the rest), and keep MuJoCo at **3.1.6**. I do **not** recommend installing the lerobot package with `pip install lerobot`; use the pinned git install from the Dockerfile.
+
+### Assets
+
+Unzip the objaverse asset (if present):
+
+```bash
 cd asset/objaverse
-unzip plate_11.zip
+unzip -o plate_11.zip
 ```
 
 ## SO-100 / SO-101 Arm Assets
@@ -128,16 +162,11 @@ This workspace has undergone significant improvements to enhance simulation reli
 ### Environment Enhancements
 - **Improved object spawning**: Added bin exclusion zones and reachability checks to prevent objects from spawning in unreachable locations or inside the target bin
 - **Pick-and-place gating**: Success now requires the object to be lifted off the table before placement, preventing false positives
-- **Configurable spawn bounds**: Updated default spawn ranges to match SO-101 arm reachability (`spawn_x_range: [0.25, 0.52]`, `spawn_y_range: [0.02, 0.22]`)
+- **Configurable spawn bounds**: Updated default spawn ranges to match SO-101 arm reachability (`spawn_x_range: [0.21, 0.27]`, `spawn_y_range: [0.04, 0.16]`)
 - **Enhanced success detection**: Added height-based checks relative to bin geometry for more reliable task completion verification
 
 ### New Features
-- **Scripted demonstration generator** (`scripts/1.scripted_demo.py`): Fully automated FSM-based pick-and-place controller for generating large-scale demonstration datasets without manual teleoperation
-  - IK-based waypoint planning with error checking
-  - 8-phase motion sequence (approach → descend → grasp → lift → transport → place → release → retract)
-  - Automatic retry on IK failures or task failures
-  - Configurable motion parameters and spawn bounds
-  - Output compatible with existing training pipeline
+- **Batch scripted data collection** (`scripts/collect/batch_collect_data.py`): Mink-based FSM pick-and-place controller for generating datasets without manual teleoperation
 
 ### Asset and Scene Updates
 - **Updated MuJoCo scenes**: Refined block and bin geometries for more reliable grasping and placement
@@ -167,14 +196,14 @@ By default, data collection loads the SO101 scene/profile from [configs/collect_
 - `xml_path: ./asset/scene_so101_y.xml`
 - `root: ./data/demo_data_so101`
 - Spawn bounds (calibrated for SO-101 reachability):
-  - `spawn_x_range: [0.25, 0.52]` m
-  - `spawn_y_range: [0.02, 0.22]` m
+  - `spawn_x_range: [0.21, 0.27]` m
+  - `spawn_y_range: [0.04, 0.16]` m
   - `spawn_z_range: [0.815, 0.815]` m
 
 You can switch profiles at runtime with:
 ```bash
-python 1.collect_data.py --env-robot-profile so100
-python 1.collect_data.py --env-robot-profile omy
+python scripts/collect/manual_collect_data.py --env-robot-profile so100
+python scripts/collect/manual_collect_data.py --env-robot-profile omy
 ```
 
 Or by editing [configs/collect_data.yaml](configs/collect_data.yaml).
@@ -183,12 +212,11 @@ You can use either the Python scripts in `scripts/` or the Jupyter notebooks in 
 
 **Python Scripts:**
 ```bash
-cd scripts
-python 1.collect_data.py
-python 1.scripted_demo.py --num-demo 100  # Automated generation
-python 2.visualize_data.py
-python 3.train.py
-python 4.deploy.py
+python scripts/collect/manual_collect_data.py --config configs/collect_manual.yaml
+python scripts/collect/batch_collect_data.py --config configs/collect_batch.yaml
+python scripts/visualize/visualize_data.py
+python scripts/train/train_act.py
+python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y
 ```
 
 **Jupyter Notebooks:**
@@ -196,12 +224,40 @@ python 4.deploy.py
 jupyter notebook notebooks/
 ```
 
+## Upload datasets to Hugging Face Hub (optional)
+
+If you want to train on another machine (or share datasets), you can upload a locally collected dataset directory to the Hugging Face Hub.
+
+1) Collect data locally (manual teleop or scripted batch):
+
+```bash
+python scripts/collect/manual_collect_data.py --config configs/collect_manual.yaml
+# or
+python scripts/collect/batch_collect_data.py --config configs/collect_batch.yaml
+```
+
+2) Upload the dataset folder:
+
+```bash
+# Requires authentication (e.g. `huggingface-cli login` or export HF_TOKEN=...)
+python scripts/hf/upload_dataset.py \
+  --root ./data/demo_data_so101 \
+  --repo-id <your-username>/<your-dataset-repo>
+```
+
+Notes:
+- If you are using `docker-compose.yml`, it currently sets `HF_HUB_OFFLINE=1`. Disable that env var for uploads/downloads from the Hub.
+
+## Training from Hub vs local
+
+The general trainer (`scripts/train/train_model.py`) is config-driven. The `configs/pi0_so101.yaml` and `configs/smolvla_so101.yaml` already use a `dataset.repo_id` field (Hub dataset id) and a `dataset.root` field (local cache/path). Point `dataset.repo_id` at your uploaded dataset to train on another machine without copying files manually.
+
 ## 1. Collect Demonstration Data
 
 Run [notebooks/1.collect_data.ipynb](notebooks/1.collect_data.ipynb) or use the script:
+
 ```bash
-cd scripts
-python 1.collect_data.py
+python scripts/collect/manual_collect_data.py --config configs/collect_manual.yaml
 ```
 
 Collect demonstration data for the given environment.
@@ -215,10 +271,10 @@ The default scene `asset/scene_so101_y.xml` uses:
 
 **Spawn Configuration:**
 The spawn bounds have been calibrated for SO-101 reachability:
-- X range: `[0.25, 0.52]` m (forward reach from robot base)
-- Y range: `[0.02, 0.22]` m (lateral reach)
+- X range: `[0.21, 0.27]` m (forward reach from robot base)
+- Y range: `[0.04, 0.16]` m (lateral reach)
 - Z range: `[0.815, 0.815]` m (table surface height)
-- Minimum distance between objects: `0.2` m
+- Minimum distance between objects: `0.01` m
 - Automatic bin exclusion: Objects won't spawn inside or too close to the target bin
 
 If using a custom scene, update the `pick_body_name` and `place_body_name` parameters accordingly.
@@ -237,61 +293,13 @@ For overlayed images,
 
 ## 1b. Scripted Demonstration Generation
 
-For generating large-scale demonstration datasets automatically, use the scripted FSM controller:
+For generating demonstration datasets automatically (no teleoperation), use the batch scripted collector (Mink-based FSM):
 
 ```bash
-cd scripts
-python 1.scripted_demo.py --num-demo 100
+python scripts/collect/batch_collect_data.py --config configs/collect_batch.yaml --num-demo 100
 ```
 
-This script uses a Finite State Machine (FSM) controller with IK-based waypoint planning to generate demonstrations programmatically. The output format is identical to manual teleoperation data, so the same training pipeline works without modification.
-
-**Key Features:**
-- Fully automated pick-and-place execution
-- 8-phase motion sequence: approach → descend → grasp → lift → transport → place → release → retract
-- Automatic IK solving with error checking and retry logic
-- Configurable motion parameters and spawn bounds
-- Success verification before saving episodes
-- Option to disable rendering for faster generation
-
-**Common Usage Examples:**
-
-```bash
-# Generate 100 demonstrations with visualization
-python 1.scripted_demo.py --num-demo 100
-
-# Fast generation without rendering (for large datasets)
-python 1.scripted_demo.py --num-demo 1000 --no-render --seed 42
-
-# Adjust motion timing for smoother/faster trajectories
-python 1.scripted_demo.py --num-demo 50 --steps-per-phase 30
-
-# Customize height waypoints (all values in metres)
-python 1.scripted_demo.py --num-demo 100 \
-    --approach-height 0.15 \
-    --grasp-height 0.01 \
-    --lift-height 0.25 \
-    --place-height 0.15 \
-    --retract-height 0.30
-```
-
-**Configuration Parameters:**
-- `--approach-height`: EEF height above block center for safe approach (default: 0.12 m)
-- `--grasp-height`: EEF height above block center at grasp point (default: 0.01 m)
-- `--lift-height`: EEF height above block center after grasping (default: 0.20 m)
-- `--place-height`: EEF height above bin origin for release (default: 0.13 m)
-- `--retract-height`: EEF height above bin origin after release (default: 0.25 m)
-- `--steps-per-phase`: Control steps per motion segment (default: 20)
-- `--sim-substeps`: Physics steps per control step (default: 25, matches 20 Hz recording rate)
-- `--max-ik-err-skip`: Skip episode if IK error exceeds threshold (default: 0.05 m)
-
-The scripted generator is particularly useful for:
-- Creating baseline datasets for training
-- Generating large-scale datasets (1000+ demonstrations) quickly
-- Testing environment configurations and spawn bounds
-- Pre-training models before fine-tuning with human demonstrations
-
-**Output:** Saved to `data/demo_data_so101_scripted/` by default (configurable with `--root`).
+This uses a finite state machine (FSM) controller with Mink-based IK to generate demonstrations programmatically. The output format is compatible with the same training pipeline as manual teleop.
 
 The dataset is contained as follows:
 ```
@@ -345,9 +353,9 @@ For convenience, we have added [Example Data](data/demo_data_example/) to the re
 ## 2. Playback Your Data
 
 Run [notebooks/2.visualize_data.ipynb](notebooks/2.visualize_data.ipynb) or:
+
 ```bash
-cd scripts
-python 2.visualize_data.py
+python scripts/visualize/visualize_data.py
 ```
 
 <img src="./media/data.gif" width="480" height="360"></img>
@@ -367,9 +375,9 @@ The overlayed images on the top right and bottom right are from the dataset.
 ## 3. Train Action-Chunking-Transformer (ACT)
 
 Run [notebooks/3.train.ipynb](notebooks/3.train.ipynb) or:
+
 ```bash
-cd scripts
-python 3.train.py
+python scripts/train/train_act.py
 ```
 
 **This takes around 30~60 mins**.
@@ -378,10 +386,12 @@ Train the ACT model on your custom dataset. In this example, we set chunk_size a
 
 The trained checkpoint will be saved in the `checkpoints/act_y` folder.
 
+Deployment note: `scripts/train/train_act.py` writes a `deploy_metadata.json` into the checkpoint directory so students can deploy ACT with only the checkpoint folder (no dataset directory required).
+
 To evaluate the policy on the dataset, you can calculate the error between ground-truth actions from the dataset.
 
 **Training Tips:**
-- For scripted datasets (generated with `1.scripted_demo.py`), you may achieve faster convergence due to more consistent trajectories
+- For scripted datasets (generated with `scripts/collect/batch_collect_data.py`), you may achieve faster convergence due to more consistent trajectories
 - Combining scripted and human-teleoperated data can improve policy robustness
 - The enhanced environment with spawn bounds and success checking helps produce cleaner training data
 
@@ -412,12 +422,18 @@ dataloader = torch.utils.data.DataLoader(
 ## 4. Deploy your Policy
 
 Run [notebooks/4.deploy.ipynb](notebooks/4.deploy.ipynb) or:
+
 ```bash
-cd scripts
-python 4.deploy.py
+python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y
 ```
 
 You can download checkpoint from [google drive](https://drive.google.com/drive/folders/1UqxqUgGPKU04DkpQqSWNgfYMhlvaiZsp?usp=sharing) if you don't have gpu to train your model.
+
+CPU-only machines can run:
+
+```bash
+python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y --device cpu
+```
 
 <img src="./media/rollout.gif" width="480" height="360" controls></img>
 
@@ -436,9 +452,8 @@ Deploy trained policy in simulation.
 
 Or use the scripts:
 ```bash
-cd scripts
-python 5.language_env.py
-python 6.visualize_data_language.py
+python scripts/language_env.py
+python scripts/visualize/visualize_data_language.py
 ```
 
 
@@ -465,16 +480,16 @@ python 6.visualize_data_language.py
 </table>
 
 ## 7. Train and Deploy pi_0
-- [scripts/train_model.py](scripts/train_model.py): Training script
+- [scripts/train/train_model.py](scripts/train/train_model.py): Training script
 - [configs/pi0_so101.yaml](configs/pi0_so101.yaml): Training configuration file
 - [notebooks/7.pi0.ipynb](notebooks/7.pi0.ipynb): Policy deployment
-- [scripts/pi0_deploy.py](scripts/pi0_deploy.py): Policy deployment script
+- [scripts/deploy/deploy_pi0.py](scripts/deploy/deploy_pi0.py): Policy deployment script
 
 
 
 ### Training Scripts
 ```bash
-python train_model.py --config_path configs/pi0_so101.yaml
+python scripts/train/train_model.py --config_path configs/pi0_so101.yaml
 ```
 
 
@@ -521,16 +536,16 @@ wandb:
 
 ## 8. Train and Deploy Smolvla
 
-- [scripts/train_model.py](scripts/train_model.py): Training script
+- [scripts/train/train_model.py](scripts/train/train_model.py): Training script
 - [configs/smolvla_so101.yaml](configs/smolvla_so101.yaml): Training configuration file
 - [notebooks/8.smolvla.ipynb](notebooks/8.smolvla.ipynb): Policy deployment
-- [scripts/smolvla_deploy.py](scripts/smolvla_deploy.py): Policy deployment script
+- [scripts/deploy/deploy_smolvla.py](scripts/deploy/deploy_smolvla.py): Policy deployment script
 
 
 
 ### Training Scripts
 ```bash
-python train_model.py --config_path configs/smolvla_so101.yaml
+python scripts/train/train_model.py --config_path configs/smolvla_so101.yaml
 ```
 
 

@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 *.egg
+scripts/__pycache__/
 
 # Virtual environments
 .venv/
@@ -31,6 +32,8 @@ ckpt/
 # Training logs
 wandb/
 logs/
+MUJOCO_LOG.TXT
+scripts/MUJOCO_LOG.TXT
 
 # Assets (large files - exclude most, keep essential robot meshes)
 asset/objaverse/

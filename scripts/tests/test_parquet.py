@@ -3,7 +3,8 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-root = Path("../data/demo_data_so101")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+root = PROJECT_ROOT / "data" / "demo_data_so101"
 paths = sorted(root.glob("data/chunk-*/episode_*.parquet"))
 print("Found", len(paths), "episode files")
 path = paths[0]

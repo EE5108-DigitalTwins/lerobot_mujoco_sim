@@ -437,8 +437,18 @@ class SimpleEnv:
         
         # Set robot-specific initial configurations and home positions
         if self.robot_profile == 'so101':
-            # Always start from the all-zero SO101 joint configuration.
-            q_zero = np.zeros(self.n_arm_joints, dtype=np.float32)
+            # SO101 stowed: joint 1 = 0, joint 2 = clockwise limit, joint 3 = anti-clockwise limit,
+            # wrist = 90°. Uses model limits for j2/j3 so stowed stays correct if model changes.
+            q_zero = np.array(
+                [
+                    0.0,
+                    self.joint_mins[1],   # shoulder_lift at clockwise limit
+                    self.joint_maxs[2],   # elbow_flex at anti-clockwise limit
+                    np.pi / 2,            # wrist_flex 90°
+                    0.0,                  # wrist_roll
+                ],
+                dtype=np.float32,
+            )
             self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
         else:
             # Use IK for Cartesian / eef_pose controlled robots
