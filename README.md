@@ -5,6 +5,8 @@
 
 Collect demonstration data in MuJoCo, train an ACT policy, and deploy it in simulation. Single-task pick-and-place (SO-101 arm, blue block → bin).
 
+![LeRobot SO-101 arm simulation in Mujoco](./media/teleop_so101.gif)
+
 ## Table of Contents
 
 - [Installation](#installation)
