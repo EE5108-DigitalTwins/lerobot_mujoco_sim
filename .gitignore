@@ -57,9 +57,9 @@ asset/objaverse/
 !asset/so_arm100/SO101/assets/*.stl
 
 # Media files
-media/
-!media/*.md
-!media/.gitkeep
+#media/
+#!media/*.md
+#!media/.gitkeep
 
 # Third-party large files
 third_party/SO-ARM100/STL/
