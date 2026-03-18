@@ -125,9 +125,9 @@ Use `--private` for a private repo.
 
 ### 4) Train ACT
 
-- Use Colab or another GPU host.
-- Set `dataset.repo_id` to `<your-hf-username>/<your-dataset-repo>` in your training config.
-- This repo’s minimal ACT training script: `scripts/train/train_act.py`. For full config-driven training, use the LeRobot training pipeline. The script writes `deploy_metadata.json` into the checkpoint dir for easy deployment.
+- Use Google Colab (recommended) and run the notebook `notebooks/EE5108_training_act.ipynb`.
+- In the notebook, set `dataset.repo_id` to `<your-hf-username>/<your-dataset-repo>` (the dataset you uploaded in step 3).
+- The notebook trains an ACT checkpoint and writes `deploy_metadata.json` into the checkpoint directory for easy deployment.
 
 ### 5) Deploy in MuJoCo
 
@@ -218,7 +218,9 @@ Or use the notebook `notebooks/2.visualize_data.ipynb`.
 
 ## Train ACT
 
-Minimal local training example:
+Recommended (students): run the Colab notebook `notebooks/EE5108_training_act.ipynb`.
+
+Minimal local training example (if you already have the environment set up):
 
 ```bash
 python scripts/train/train_act.py
@@ -228,13 +230,26 @@ Checkpoint is written to `checkpoints/act_y/` (including `deploy_metadata.json` 
 
 ## Deploy ACT
 
-Run the policy in the same SO-101 scene:
+Run the policy in the same SO-101 MuJoCo scene:
 
 ```bash
 python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y
 ```
 
-Options: `--dataset-root`, `--xml-path`, `--device cpu`, etc. See `--help`.
+Notes:
+- This repo’s deployment script is **MuJoCo sim-only**. Do not use `lerobot-record` for this workflow (it targets the physical robot and requires a hardware `--robot.port`).
+- `deploy_act.py` prefers local dataset metadata under `--dataset-root` (it looks for `meta/info.json` and `meta/stats.json`) so you don’t need Hugging Face access.
+- If your checkpoint doesn’t include `deploy_metadata.json`, make sure to pass `--dataset-root` matching your collected dataset (example: `--dataset-root data/demo_data_so101`).
+
+Common command (local dataset stats):
+
+```bash
+python scripts/deploy/deploy_act.py \
+  --checkpoint checkpoints/act_y \
+  --dataset-root data/demo_data_so101
+```
+
+Options: `--xml-path`, `--device cpu`, `--seed`, etc. See `--help`.
 
 ## Arm Profiles & Config
 
