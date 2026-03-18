@@ -22,9 +22,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.common.datasets.utils import dataset_to_policy_features
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.act.modeling_act import ACTPolicy
-from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.configs.types import FeatureType
 from mujoco_env.y_env import SimpleEnv
 
 
@@ -51,8 +52,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--task", default="Put blue block in the bin")
     p.add_argument("--hz", type=int, default=20, help="Control loop rate in Hz.")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument(exit
-    
+    p.add_argument(
         "--device",
         default="auto",
         choices=["auto", "cpu", "cuda"],
@@ -65,7 +65,7 @@ def resolve_device(device_flag: str) -> torch.device:
     if device_flag == "cpu":
         return torch.device("cpu")
     if device_flag == "cuda":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return torch.device("cuda")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -92,93 +92,29 @@ def main() -> None:
         if not dataset_root.is_absolute():
             dataset_root = (PROJECT_ROOT / dataset_root).resolve()
 
-        # Prefer local dataset metadata (avoid any HF lookups).
-        # This repo's `data/demo_data_*` directories contain:
-        #   meta/info.json  (includes `features`)
-        #   meta/stats.json (includes normalization stats)
-        info_path = dataset_root / "meta" / "info.json"
-        stats_path = dataset_root / "meta" / "stats.json"
-        if info_path.exists() and stats_path.exists():
-            deploy_info = json.loads(info_path.read_text(encoding="utf-8"))
-            features_raw = deploy_info.get("features")
-            raw_stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        dataset_metadata = LeRobotDatasetMetadata(args.dataset_repo_id, root=str(dataset_root))
+        dataset_stats = dataset_metadata.stats
+        features_raw = dataset_metadata.features
 
-            # LeRobot's Normalize expects per-feature stats where `mean/std/min/max`
-            # are `np.ndarray` (or `torch.Tensor`), not Python lists.
-            dataset_stats = {}
-            for feature_name, feature_stats in raw_stats.items():
-                dataset_stats[feature_name] = {}
-                for stat_name, stat_value in feature_stats.items():
-                    if isinstance(stat_value, list):
-                        dataset_stats[feature_name][stat_name] = np.asarray(stat_value, dtype=np.float32)
-                    else:
-                        dataset_stats[feature_name][stat_name] = stat_value
-        else:
-            dataset_metadata = LeRobotDatasetMetadata(args.dataset_repo_id, root=str(dataset_root))
-            dataset_stats = dataset_metadata.stats
-            features_raw = dataset_metadata.features
-
-    # Rebuild ACTConfig from the checkpoint's config.json, but only pass the
-    # ACTConfig-relevant fields. This avoids schema mismatches where the
-    # checkpoint config contains extra Hugging Face fields (e.g. repo_id).
-    ckpt_cfg_path = checkpoint_path / "config.json"
-    if not ckpt_cfg_path.exists():
-        raise FileNotFoundError(f"Checkpoint config not found: {ckpt_cfg_path}")
-
-    ckpt_cfg = json.loads(ckpt_cfg_path.read_text(encoding="utf-8"))
-
-    input_features = {
-        name: PolicyFeature(
-            type=FeatureType[feat_cfg["type"]],
-            shape=tuple(feat_cfg["shape"]),
-        )
-        for name, feat_cfg in ckpt_cfg["input_features"].items()
-    }
-    output_features = {
-        name: PolicyFeature(
-            type=FeatureType[feat_cfg["type"]],
-            shape=tuple(feat_cfg["shape"]),
-        )
-        for name, feat_cfg in ckpt_cfg["output_features"].items()
-    }
-
-    normalization_mapping = {
-        feat_type: NormalizationMode[mode]
-        for feat_type, mode in ckpt_cfg.get("normalization_mapping", {}).items()
-    }
+    features = dataset_to_policy_features(features_raw)
+    output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
+    input_features = {key: ft for key, ft in features.items() if key not in output_features}
+    # This environment provides wrist images; ACT configs in this repo typically drop it.
+    input_features.pop("observation.wrist_image", None)
 
     cfg = ACTConfig(
-        n_obs_steps=int(ckpt_cfg.get("n_obs_steps", 1)),
         input_features=input_features,
         output_features=output_features,
-        chunk_size=int(ckpt_cfg["chunk_size"]),
-        n_action_steps=int(ckpt_cfg["n_action_steps"]),
-        temporal_ensemble_coeff=ckpt_cfg.get("temporal_ensemble_coeff", None),
-        normalization_mapping=normalization_mapping,
-        vision_backbone=ckpt_cfg.get("vision_backbone", "resnet18"),
-        pretrained_backbone_weights=ckpt_cfg.get("pretrained_backbone_weights", None),
-        replace_final_stride_with_dilation=bool(ckpt_cfg.get("replace_final_stride_with_dilation", False)),
-        pre_norm=bool(ckpt_cfg.get("pre_norm", False)),
-        dim_model=int(ckpt_cfg.get("dim_model", 512)),
-        n_heads=int(ckpt_cfg.get("n_heads", 8)),
-        dim_feedforward=int(ckpt_cfg.get("dim_feedforward", 3200)),
-        feedforward_activation=ckpt_cfg.get("feedforward_activation", "relu"),
-        n_encoder_layers=int(ckpt_cfg.get("n_encoder_layers", 4)),
-        n_decoder_layers=int(ckpt_cfg.get("n_decoder_layers", 1)),
-        use_vae=bool(ckpt_cfg.get("use_vae", True)),
-        latent_dim=int(ckpt_cfg.get("latent_dim", 32)),
-        n_vae_encoder_layers=int(ckpt_cfg.get("n_vae_encoder_layers", 4)),
-        dropout=float(ckpt_cfg.get("dropout", 0.1)),
-        kl_weight=float(ckpt_cfg.get("kl_weight", 10.0)),
-        optimizer_lr=float(ckpt_cfg.get("optimizer_lr", 1e-05)),
-        optimizer_weight_decay=float(ckpt_cfg.get("optimizer_weight_decay", 0.0001)),
-        optimizer_lr_backbone=float(ckpt_cfg.get("optimizer_lr_backbone", 1e-05)),
-        # Override the checkpoint device with the runtime device selection.
-        device=str(device),
-        use_amp=bool(ckpt_cfg.get("use_amp", False)),
+        chunk_size=10,
+        n_action_steps=1,
+        temporal_ensemble_coeff=0.9,
     )
 
-    policy = ACTPolicy.from_pretrained(str(checkpoint_path), config=cfg, dataset_stats=dataset_stats)
+    policy = ACTPolicy.from_pretrained(
+        str(checkpoint_path),
+        config=cfg,
+        dataset_stats=dataset_stats,
+    )
     policy.to(device)
     policy.eval()
 
@@ -187,14 +123,6 @@ def main() -> None:
         action_type="joint_angle",
         pick_body_name=args.pick_body_name,
         place_body_name=args.place_body_name,
-        # Match the spawn constraints used during dataset collection; the
-        # SimpleEnv defaults are too strict for sampling 4 objects reliably.
-        spawn_x_range=(0.21, 0.27),
-        spawn_y_range=(0.04, 0.16),
-        spawn_z_range=(0.815, 0.815),
-        spawn_min_dist=0.01,
-        spawn_xy_margin=0.0,
-        spawn_fallback_min_dist=0.1,
     )
 
     img_transform = torchvision.transforms.ToTensor()

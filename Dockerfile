@@ -42,10 +42,7 @@ RUN add-apt-repository ppa:deadsnakes/ppa && \
     python3.12-tk \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
-
-RUN ln -sf /usr/local/bin/pip /usr/local/bin/pip3
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
 # Hugging Face CLI (for `huggingface-cli login`, uploads, etc.)
 RUN curl -LsSf https://hf.co/cli/install.sh | bash
@@ -79,9 +76,7 @@ RUN python -m pip install --no-cache-dir \
 
 # LeRobot from main (matches Dockerfile.runtime for consistency)
 RUN python -m pip install --no-cache-dir \
-  # Pin to a commit compatible with this repo's `lerobot.common.*` imports.
-  --ignore-installed \
-  "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+  "git+https://github.com/huggingface/lerobot.git@main#egg=lerobot"
 
 RUN python -m pip install --no-cache-dir jupyterlab ipykernel ipywidgets
 
