@@ -30,7 +30,12 @@ import shutil
 from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+try:
+    # LeRobot >= 0.7.x
+    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+except ImportError:
+    # Backward compatibility for older LeRobot layouts
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 @dataclass
 class CollectConfig:
@@ -412,8 +417,8 @@ def collect_demonstrations(env, dataset, config):
                         # Store the initial block spawn configuration so that
                         # replay can reconstruct the exact scene.
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
-                        "task": config.task_name,
                     },
+                    task=config.task_name,
                 )
                 frames_in_episode += 1
 

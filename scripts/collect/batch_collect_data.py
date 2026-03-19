@@ -19,7 +19,12 @@ from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
-from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
+try:
+    # LeRobot >= 0.7.x
+    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
+except ImportError:
+    # Backward compatibility for older LeRobot layouts
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
 from so101.inverse_kinematics import get_inverse_kinematics
 from so101.mujoco_utils import move_to_pose
 
@@ -594,8 +599,8 @@ def collect_demonstrations(env, dataset, config):
                         "action": joint_q,
                         "obj_init": env.obj_init_pose,
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
-                        "task": config.task_name,
                     },
+                    task=config.task_name,
                 )
                 frames_in_episode += 1
 
