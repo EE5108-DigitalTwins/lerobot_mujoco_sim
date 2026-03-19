@@ -9,13 +9,16 @@ Students should be able to:
 
 import argparse
 import json
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
 import torchvision
 from PIL import Image
+import yaml
 
 # Get project root directory (parent of scripts/)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,33 +31,88 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from mujoco_env.y_env import SimpleEnv
 
 
+@dataclass
+class DeployConfig:
+    checkpoint: str = str(PROJECT_ROOT / "checkpoints" / "act_y")
+    dataset_root: str = str(PROJECT_ROOT / "data" / "demo_data_so101")
+    dataset_repo_id: str = "so101_pnp"
+    xml_path: str = str(PROJECT_ROOT / "asset" / "scene_so101_y.xml")
+    pick_body_name: str = "body_obj_block_2"
+    place_body_name: str = "body_obj_bin"
+    task: str = "Put blue block in the bin"
+    hz: int = 20
+    seed: int = 0
+    device: str = "auto"
+    image_size: int = 256
+    spawn_x_min: float = 0.21
+    spawn_x_max: float = 0.27
+    spawn_y_min: float = 0.04
+    spawn_y_max: float = 0.16
+    spawn_z_min: float = 0.815
+    spawn_z_max: float = 0.815
+    spawn_min_dist: float = 0.01
+    spawn_xy_margin: float = 0.0
+    spawn_fallback_min_dist: float = 0.1
+
+
 def parse_args() -> argparse.Namespace:
+    bootstrap_parser = argparse.ArgumentParser(add_help=False)
+    bootstrap_parser.add_argument(
+        "--config",
+        default=str(PROJECT_ROOT / "configs" / "deploy_act.yaml"),
+        help="Path to YAML config file.",
+    )
+    bootstrap_args, _ = bootstrap_parser.parse_known_args()
+
+    default_cfg = DeployConfig()
+    merged_defaults = default_cfg.__dict__.copy()
+    if os.path.exists(bootstrap_args.config):
+        with open(bootstrap_args.config, "r", encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+        unknown_keys = [k for k in yaml_cfg.keys() if k not in merged_defaults]
+        if unknown_keys:
+            raise ValueError(f"Unknown keys in config file {bootstrap_args.config}: {unknown_keys}")
+        merged_defaults.update(yaml_cfg)
+        print(f"[deploy_act] Loaded config: {bootstrap_args.config}")
+    else:
+        print(f"[deploy_act] Config not found: {bootstrap_args.config}. Using built-in defaults.")
+
     p = argparse.ArgumentParser(description="Deploy a trained ACT policy in MuJoCo.")
+    p.add_argument("--config", default=bootstrap_args.config, help="Path to YAML config file.")
     p.add_argument(
         "--checkpoint",
-        default=str(PROJECT_ROOT / "checkpoints" / "act_y"),
+        default=merged_defaults["checkpoint"],
         help="Path to ACT checkpoint directory (created by ACTPolicy.save_pretrained).",
     )
     p.add_argument(
         "--dataset-root",
-        default=str(PROJECT_ROOT / "data" / "demo_data_so101"),
+        default=merged_defaults["dataset_root"],
         help="Local dataset root used to load dataset stats/features for normalization.",
     )
-    p.add_argument("--dataset-repo-id", default="so101_pnp", help="LeRobot dataset repo id used for metadata.")
+    p.add_argument("--dataset-repo-id", default=merged_defaults["dataset_repo_id"], help="LeRobot dataset repo id used for metadata.")
     p.add_argument(
         "--xml-path",
-        default=str(PROJECT_ROOT / "asset" / "scene_so101_y.xml"),
+        default=merged_defaults["xml_path"],
         help="MuJoCo scene XML path.",
     )
-    p.add_argument("--pick-body-name", default="body_obj_block_2")
-    p.add_argument("--place-body-name", default="body_obj_bin")
-    p.add_argument("--task", default="Put blue block in the bin")
-    p.add_argument("--hz", type=int, default=20, help="Control loop rate in Hz.")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument(exit
-    
+    p.add_argument("--pick-body-name", default=merged_defaults["pick_body_name"])
+    p.add_argument("--place-body-name", default=merged_defaults["place_body_name"])
+    p.add_argument("--task", default=merged_defaults["task"])
+    p.add_argument("--hz", type=int, default=merged_defaults["hz"], help="Control loop rate in Hz.")
+    p.add_argument("--seed", type=int, default=merged_defaults["seed"])
+    p.add_argument("--image-size", type=int, default=merged_defaults["image_size"])
+    p.add_argument("--spawn-x-min", type=float, default=merged_defaults["spawn_x_min"])
+    p.add_argument("--spawn-x-max", type=float, default=merged_defaults["spawn_x_max"])
+    p.add_argument("--spawn-y-min", type=float, default=merged_defaults["spawn_y_min"])
+    p.add_argument("--spawn-y-max", type=float, default=merged_defaults["spawn_y_max"])
+    p.add_argument("--spawn-z-min", type=float, default=merged_defaults["spawn_z_min"])
+    p.add_argument("--spawn-z-max", type=float, default=merged_defaults["spawn_z_max"])
+    p.add_argument("--spawn-min-dist", type=float, default=merged_defaults["spawn_min_dist"])
+    p.add_argument("--spawn-xy-margin", type=float, default=merged_defaults["spawn_xy_margin"])
+    p.add_argument("--spawn-fallback-min-dist", type=float, default=merged_defaults["spawn_fallback_min_dist"])
+    p.add_argument(
         "--device",
-        default="auto",
+        default=merged_defaults["device"],
         choices=["auto", "cpu", "cuda"],
         help="Device to run policy on.",
     )
@@ -187,14 +245,12 @@ def main() -> None:
         action_type="joint_angle",
         pick_body_name=args.pick_body_name,
         place_body_name=args.place_body_name,
-        # Match the spawn constraints used during dataset collection; the
-        # SimpleEnv defaults are too strict for sampling 4 objects reliably.
-        spawn_x_range=(0.21, 0.27),
-        spawn_y_range=(0.04, 0.16),
-        spawn_z_range=(0.815, 0.815),
-        spawn_min_dist=0.01,
-        spawn_xy_margin=0.0,
-        spawn_fallback_min_dist=0.1,
+        spawn_x_range=(args.spawn_x_min, args.spawn_x_max),
+        spawn_y_range=(args.spawn_y_min, args.spawn_y_max),
+        spawn_z_range=(args.spawn_z_min, args.spawn_z_max),
+        spawn_min_dist=args.spawn_min_dist,
+        spawn_xy_margin=args.spawn_xy_margin,
+        spawn_fallback_min_dist=args.spawn_fallback_min_dist,
     )
 
     img_transform = torchvision.transforms.ToTensor()
@@ -215,8 +271,8 @@ def main() -> None:
             state = env.get_ee_pose()
             image, wrist_image = env.grab_image()
 
-            image_t = img_transform(Image.fromarray(image).resize((256, 256))).unsqueeze(0).to(device)
-            wrist_t = img_transform(Image.fromarray(wrist_image).resize((256, 256))).unsqueeze(0).to(device)
+            image_t = img_transform(Image.fromarray(image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
+            wrist_t = img_transform(Image.fromarray(wrist_image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
 
             batch = {
                 "observation.state": torch.tensor([state], dtype=torch.float32, device=device),

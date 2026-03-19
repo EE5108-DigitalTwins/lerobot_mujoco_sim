@@ -137,6 +137,12 @@ Copy the trained checkpoint (e.g. into `checkpoints/act_y/`), then:
 python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y
 ```
 
+Config-file driven deploy (recommended):
+
+```bash
+python scripts/deploy/deploy_act.py --config configs/deploy_act.yaml
+```
+
 CPU-only:
 
 ```bash
@@ -249,7 +255,8 @@ python scripts/deploy/deploy_act.py \
   --dataset-root data/demo_data_so101
 ```
 
-Options: `--xml-path`, `--device cpu`, `--seed`, etc. See `--help`.
+Spawn bounds and runtime defaults for deploy live in `configs/deploy_act.yaml`.
+CLI flags still override YAML values. Options include: `--xml-path`, `--device cpu`, `--seed`, `--spawn-x-min`, etc. See `--help`.
 
 ## Arm Profiles & Config
 
