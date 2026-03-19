@@ -1,7 +1,9 @@
+xml_path: ./asset/scene_so101_y.xml
 checkpoint: ./checkpoints/act_y
 dataset_root: ./data/demo_data_so101
-dataset_repo_id: so101_pnp
-xml_path: ./asset/scene_so101_y.xml
+# Hugging Face repo id for the *dataset* (must be uploaded with `--repo-type dataset`).
+# From your screenshot, this is: `BrianMIR1/EE5108_batch_sim`.
+dataset_repo_id: BrianMIR1/EE5108_batch_sim
 pick_body_name: body_obj_block_2
 place_body_name: body_obj_bin
 task: Put blue block in the bin

@@ -29,6 +29,7 @@ from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from mujoco_env.y_env import SimpleEnv
+from huggingface_hub import hf_hub_download
 
 
 @dataclass
@@ -172,9 +173,37 @@ def main() -> None:
                     else:
                         dataset_stats[feature_name][stat_name] = stat_value
         else:
-            dataset_metadata = LeRobotDatasetMetadata(args.dataset_repo_id, root=str(dataset_root))
-            dataset_stats = dataset_metadata.stats
-            features_raw = dataset_metadata.features
+            # Download only the dataset metadata pieces we need for ACT deployment.
+            # Some LeRobot dataset repos (including your HF dataset) include:
+            #   meta/info.json, meta/stats.json
+            # but not necessarily the legacy file(s) that `LeRobotDatasetMetadata`
+            # tries to read (e.g. `meta/tasks.jsonl`).
+            token = os.environ.get("HF_TOKEN") or os.environ.get("HF_API_TOKEN")
+            info_fpath = hf_hub_download(
+                repo_id=args.dataset_repo_id,
+                filename="meta/info.json",
+                repo_type="dataset",
+                token=token,
+            )
+            stats_fpath = hf_hub_download(
+                repo_id=args.dataset_repo_id,
+                filename="meta/stats.json",
+                repo_type="dataset",
+                token=token,
+            )
+
+            deploy_info = json.loads(Path(info_fpath).read_text(encoding="utf-8"))
+            features_raw = deploy_info.get("features")
+            raw_stats = json.loads(Path(stats_fpath).read_text(encoding="utf-8"))
+
+            dataset_stats = {}
+            for feature_name, feature_stats in raw_stats.items():
+                dataset_stats[feature_name] = {}
+                for stat_name, stat_value in feature_stats.items():
+                    if isinstance(stat_value, list):
+                        dataset_stats[feature_name][stat_name] = np.asarray(stat_value, dtype=np.float32)
+                    else:
+                        dataset_stats[feature_name][stat_name] = stat_value
 
     # Rebuild ACTConfig from the checkpoint's config.json, but only pass the
     # ACTConfig-relevant fields. This avoids schema mismatches where the

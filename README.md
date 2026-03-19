@@ -5,7 +5,7 @@
 
 Collect demonstration data in MuJoCo, train an ACT policy, and deploy it in simulation. Single-task pick-and-place (SO-101 arm, blue block → bin).
 
-![LeRobot SO-101 arm simulation in Mujoco](./media/teleop_so101.gif)
+LeRobot SO-101 arm simulation in Mujoco
 
 ## Table of Contents
 
@@ -103,6 +103,7 @@ python scripts/collect/batch_collect_data.py \
 Both write a LeRobot-style dataset under `data/demo_data_so101` (or a `_fresh_*` variant if the directory already exists and `--offline-local-only` is set).
 
 ### 3) Upload dataset to Hugging Face
+
 You'll need a Huggingface account and an access token to create a dataset.
 Login (one of):
 
@@ -198,15 +199,17 @@ python scripts/collect/batch_collect_data.py --config configs/collect_batch.yaml
 
 ### Keyboard controls (SO-101)
 
-| Key       | Action                |
-|----------|------------------------|
-| A / D    | Shoulder pan           |
-| W / S    | Shoulder lift          |
-| R / F    | Elbow flex             |
-| ↑ / ↓    | Wrist flex             |
-| ← / →    | Wrist roll             |
-| SPACE    | Toggle gripper         |
-| Z        | Reset & discard episode|
+
+| Key   | Action                  |
+| ----- | ----------------------- |
+| A / D | Shoulder pan            |
+| W / S | Shoulder lift           |
+| R / F | Elbow flex              |
+| ↑ / ↓ | Wrist flex              |
+| ← / → | Wrist roll              |
+| SPACE | Toggle gripper          |
+| Z     | Reset & discard episode |
+
 
 ### Scripted batch
 
@@ -236,16 +239,26 @@ Checkpoint is written to `checkpoints/act_y/` (including `deploy_metadata.json` 
 
 ## Deploy ACT
 
-Run the policy in the same SO-101 MuJoCo scene:
+Run the policy in the same SO-101 MuJoCo scene using a trained ACT checkpoint.
 
 ```bash
 python scripts/deploy/deploy_act.py --checkpoint checkpoints/act_y
 ```
 
-Notes:
+`scripts/deploy/deploy_act.py` builds the ACT policy from your checkpoint’s `config.json`, then loads dataset normalization stats (needed to denormalize the action outputs correctly).
+
+The dataset stats come from one of these places:
+
+- If `checkpoints/<your-checkpoint>/deploy_metadata.json` exists, `deploy_act.py` uses that directly.
+- Otherwise, it looks for local dataset metadata under `--dataset-root`.
+- It expects `meta/info.json` (includes `features`).
+- It expects `meta/stats.json` (normalization statistics).
+- If those local files are missing, it downloads only `meta/info.json` and `meta/stats.json` from the Hugging Face **dataset** repo given by `--dataset-repo-id`.
+
+Notes / gotchas:
+
 - This repo’s deployment script is **MuJoCo sim-only**. Do not use `lerobot-record` for this workflow (it targets the physical robot and requires a hardware `--robot.port`).
-- `deploy_act.py` prefers local dataset metadata under `--dataset-root` (it looks for `meta/info.json` and `meta/stats.json`) so you don’t need Hugging Face access.
-- If your checkpoint doesn’t include `deploy_metadata.json`, make sure to pass `--dataset-root` matching your collected dataset (example: `--dataset-root data/demo_data_so101`).
+- Make sure `--dataset-repo-id` points to a Hugging Face *dataset* repo (uploaded with `--repo-type dataset`), not a model/policy repo.
 
 Common command (local dataset stats):
 
@@ -255,8 +268,28 @@ python scripts/deploy/deploy_act.py \
   --dataset-root data/demo_data_so101
 ```
 
+### Using the YAML config
+
 Spawn bounds and runtime defaults for deploy live in `configs/deploy_act.yaml`.
+
+```bash
+python scripts/deploy/deploy_act.py --config configs/deploy_act.yaml
+```
+
 CLI flags still override YAML values. Options include: `--xml-path`, `--device cpu`, `--seed`, `--spawn-x-min`, etc. See `--help`.
+
+### Important flags (most used)
+
+Run `python scripts/deploy/deploy_act.py --help` for the full list, but these are the key ones:
+
+- `--checkpoint`: checkpoint folder containing at least `config.json` (and optionally `deploy_metadata.json`)
+- `--dataset-root`: local dataset folder (default is set in the YAML). Expected to contain `meta/info.json` and `meta/stats.json`.
+- `--dataset-repo-id`: Hugging Face dataset repo id used only if local `meta/` files aren’t present
+- `--xml-path`: MuJoCo scene XML
+
+### If your dataset is private
+
+Set `HF_TOKEN` in the environment, or (when using the provided docker-compose runtime) place a token in `token.txt` at the repo root so the container can export it.
 
 ## Arm Profiles & Config
 
