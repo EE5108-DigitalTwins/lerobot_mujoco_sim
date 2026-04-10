@@ -13,6 +13,9 @@ LeRobot SO-101 arm simulation in Mujoco
 - [EE5108 Mini-Project Workflow](#ee5108-mini-project-workflow)
 - [Project Structure](#project-structure)
 - [Collect Data](#collect-data)
+- [Convert dataset from v2.1 to v3.0](#convert-dataset-from-v21-to-v30)
+  - [Local conversion (disk only)](#local-conversion-disk-only)
+  - [Hugging Face Hub: convert and push](#hugging-face-hub-convert-and-push)
 - [Playback Data](#playback-data)
 - [Train ACT](#train-act)
 - [Deploy ACT](#deploy-act)
@@ -102,6 +105,10 @@ python scripts/collect/batch_collect_data.py \
 
 Both write a LeRobot-style dataset under `data/demo_data_so101` (or a `_fresh_*` variant if the directory already exists and `--offline-local-only` is set).
 
+Docker and local install targets **LeRobot 0.5.x**, so new datasets use **`codebase_version` v3.0**. With that API, `LeRobotDataset.add_frame` takes only a frame dictionary and expects a **`task`** field each step (the collectors pass your `task_name` from config). Call **`dataset.finalize()`** after recording so v3 parquet/metadata is flushed; the collector scripts do this on exit, and the collect notebook closes with `finalize()` before shutdown.
+
+If you have an **older on-disk dataset** whose `meta/info.json` still says **`v2.1`**, convert it before training or deploying with the current stack. See [Convert dataset from v2.1 to v3.0](#convert-dataset-from-v21-to-v30).
+
 ### 3) Upload dataset to Hugging Face
 
 You'll need a Huggingface account and an access token to create a dataset.
@@ -171,6 +178,7 @@ lerobot_mujoco_sim/
 │   ├── deploy/             # deploy_act.py
 │   ├── train/              # train_act.py
 │   ├── visualize/          # visualize_data.py
+│   ├── convert_lerobot_dataset_v21_to_v30_local.py  # v2.1 → v3.0 migration wrapper
 │   └── hf/                 # upload_hf.py
 ├── mujoco_env/             # MuJoCo environment
 ├── controllers/            # Mink FSM for batch collection
@@ -215,6 +223,130 @@ python scripts/collect/batch_collect_data.py --config configs/collect_batch.yaml
 
 `batch_collect_data.py` uses a Mink-based FSM to generate demonstrations without teleop. Same dataset format as manual collection.
 
+## Convert dataset from v2.1 to v3.0
+
+Use this when `meta/info.json` still says **`"codebase_version": "v2.1"`** (older LeRobot / on-disk layout) and you want **LeRobot 0.5.x** and the **v3.0** dataset format used by this repo.
+
+**What runs under the hood:** [Hugging Face LeRobot](https://github.com/huggingface/lerobot) `convert_dataset` (`lerobot.scripts.convert_dataset_v21_to_v30`). This repository ships **`scripts/convert_lerobot_dataset_v21_to_v30_local.py`**, a wrapper that:
+
+- Runs the same conversion as upstream.
+- **Repairs `spawn.block_xyz` in episode parquet** when it is stored as a NumPy “object vector” of four `(3,)` arrays (that layout breaks `pyarrow.Schema.from_pandas` during sharding). Cells are rewritten to nested lists before conversion. Skip with `--no-repair-parquet` if you know your parquet is already safe.
+
+You can use the tool in two ways: **only on disk** (default), or **disk + upload to the Hugging Face Hub**.
+
+### Prerequisites on disk (typical v2.1 tree)
+
+- `meta/info.json` with `codebase_version` **v2.1**
+- `meta/episodes.jsonl`, `meta/tasks.jsonl`, `meta/episodes_stats.jsonl`
+- `data/` (and `videos/` if the run used encoded video)
+
+`meta/stats.json` is **not** required (global stats are recomputed from `episodes_stats.jsonl`).
+
+### `--root` vs `--repo-id` (read this once)
+
+| Argument | Meaning |
+|----------|--------|
+| **`--root`** | **Filesystem path** to the dataset: the folder that directly contains `meta/` and `data/` (not the git repo root unless your dataset lives there). |
+| **`--repo-id`** | **Not a path.** It is the Hugging Face **dataset repo id** (`user-or-org/dataset-name`) when pushing, or a **placeholder** such as `local/my_run` for local-only conversion (default: `local/<folder_name>` if omitted). |
+
+**Docker:** If you mount this project at `/workspace`, the dataset is usually `/workspace/data/<dataset_name>`, **not** `/workspace/lerobot_mujoco_sim/data/...`, unless you explicitly mounted that nested path.
+
+### Environment
+
+Use **Python 3.12** with **`lerobot==0.5.1`** (or another 0.5.x that includes the v2.1→v3.0 script): venv on the host, this repo’s image if it already has `lerobot`, or the Docker one-liner below.
+
+### Local conversion (disk only)
+
+Goal: turn the folder at `--root` into a **v3.0** dataset **on your machine**. Nothing is uploaded; **no Hugging Face login** is required.
+
+From the repo root:
+
+```bash
+pip install "lerobot==0.5.1"   # in a venv if your system Python is PEP 668–managed
+
+python scripts/convert_lerobot_dataset_v21_to_v30_local.py \
+  --root /absolute/or/relative/path/to/my_v21_dataset \
+  --repo-id local/my_v21_dataset
+```
+
+If you omit `--repo-id`, it defaults to `local/<folder_name>`.
+
+**What happens to files:** upstream writes a v3.0 tree beside your dataset, moves the original v2.1 tree to **`{dataset_name}_old`** (next to `--root`), then moves the converted tree **into** the original `--root` path. Your training path stays the same; only the format changes.
+
+**Check:**
+
+```bash
+python -c "import json; print(json.load(open(\"path/to/my_v21_dataset/meta/info.json\"))[\"codebase_version\"])"
+# expect: v3.0
+```
+
+Optional: load with `LeRobotDataset` and read one step to confirm.
+
+### Hugging Face Hub: convert and push
+
+Goal: same **in-place** conversion on disk, then **upload the v3.0 dataset** to a Hub **dataset** repository so others (or you, from Colab) can load it with `repo_id=user/dataset`.
+
+**Before you run**
+
+1. **Create an empty dataset repo** on the Hub (for example [New dataset](https://huggingface.co/new-dataset)), e.g. `myuser/so101_pick_place_v30`. You need **write** access.
+2. **Authenticate:** `huggingface-cli login`, or export `HF_TOKEN` with permission to push to that repo.
+
+**Command** (real Hub id + `--push-to-hub`):
+
+```bash
+python scripts/convert_lerobot_dataset_v21_to_v30_local.py \
+  --root /path/to/my_v21_dataset \
+  --repo-id myuser/so101_pick_place_v30 \
+  --push-to-hub
+```
+
+Optional: `--branch main` (or another branch) if your workflow uses non-default branches.
+
+**Important:** Conversion **still rewrites the folder at `--root`** (original v2.1 is moved to `*_old` next to it). If you must **keep the v2.1 tree unchanged** at the original path, **copy** the dataset to another directory and pass that copy as `--root`.
+
+**Same thing with upstream only** (no `spawn.block_xyz` repair from this repo):
+
+```bash
+python -m lerobot.scripts.convert_dataset_v21_to_v30 \
+  --repo-id=myuser/so101_pick_place_v30 \
+  --root=/absolute/path/to/my_v21_dataset \
+  --push-to-hub=true
+```
+
+If that module path is missing, install `lerobot` from PyPI. Prefer this repo’s wrapper for datasets collected here, so parquet repair runs automatically.
+
+For a dataset that is **already v3.0 on disk** and you only want to upload it, see [Upload to Hugging Face](#upload-to-hugging-face) (`scripts/hf/upload_hf.py`).
+
+### Docker (one-off, local conversion example)
+
+```bash
+docker run --rm -it \
+  -v /path/to/lerobot_mujoco_sim:/workspace \
+  -w /workspace \
+  python:3.12-bookworm bash -lc '
+    pip install -q "lerobot==0.5.1" &&
+    python scripts/convert_lerobot_dataset_v21_to_v30_local.py \
+      --root /workspace/data/my_v21_dataset \
+      --repo-id local/my_v21_dataset
+  '
+```
+
+Add Hugging Face credentials inside the container (`huggingface-cli login` or `-e HF_TOKEN=...`) and append `--push-to-hub --repo-id youruser/your-dataset` for a Hub push.
+
+### Wrapper flags (quick reference)
+
+- **`--push-to-hub`** — after conversion, push to the dataset repo named by `--repo-id`.
+- **`--branch`** — Hub branch (upstream default: `main`).
+- **`--data-file-size-in-mb`**, **`--video-file-size-in-mb`** — sharding for parquet / video.
+- **`--force-conversion`** — skip upstream guard if a Hub v3 snapshot already exists (use carefully).
+- **`--no-repair-parquet`** — do not rewrite `spawn.block_xyz` in parquet.
+- **`--skip-preflight`**, **`--no-progress`**, **`--no-logging-setup`** — advanced / CI.
+
+### Caveats
+
+- Unusual dataset layouts can hit edge cases in older LeRobot versions; use **`lerobot==0.5.1`** when possible.
+- **v2.0 → v3.0** is often not a single hop; migrate to v2.1 with older tooling first if needed ([LeRobot discussions](https://github.com/huggingface/lerobot)).
+
 ## Playback Data
 
 Replay saved episodes in MuJoCo:
@@ -228,6 +360,8 @@ Or use the notebook `notebooks/2.visualize_data.ipynb`.
 ## Train ACT
 
 Recommended (students): run the Colab notebook `notebooks/EE5108_training_act.ipynb`.
+
+**Hub tokens:** Do not paste Hugging Face access tokens into notebook source if the notebook might be shared or checked into git. Prefer `HF_TOKEN` (or Colab Secrets), `huggingface-cli login` on your machine, or the `token.txt` pattern described under [Deploy ACT](#deploy-act). The training notebook reads credentials from the environment.
 
 Minimal local training example (if you already have the environment set up):
 
@@ -303,7 +437,7 @@ Spawn bounds and scene settings are in the same config.
 
 ## Upload to Hugging Face
 
-After collecting data:
+After collecting data in **v3.0** layout (or once you have converted v2.1 → v3.0; see [Convert dataset from v2.1 to v3.0](#convert-dataset-from-v21-to-v30)):
 
 ```bash
 huggingface-cli login   # or set HF_TOKEN
@@ -313,6 +447,8 @@ python scripts/hf/upload_hf.py \
   --repo-type dataset \
   --create-if-missing
 ```
+
+If your on-disk dataset is still **v2.1**, use the conversion section’s **Hugging Face Hub** flow (`--push-to-hub` with `convert_lerobot_dataset_v21_to_v30_local.py`) instead of uploading raw v2.1 with this script, unless you intentionally want the legacy format on the Hub.
 
 If using docker-compose with `HF_HUB_OFFLINE=1`, unset it for uploads.
 

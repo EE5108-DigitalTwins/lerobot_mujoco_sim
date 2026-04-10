@@ -9,26 +9,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
+import json
 import numpy as np
 import os
 import time
-from pathlib import Path
 from PIL import Image
 import shutil
 from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
 from mujoco_env.ik import solve_ik
-try:
-    # LeRobot >= 0.7.x
-    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
-except ImportError:
-    # Backward compatibility for older LeRobot layouts
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
+from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore[import-untyped]
 from so101.inverse_kinematics import get_inverse_kinematics
 from so101.mujoco_utils import move_to_pose
 
-# CHANGED: Import mink-based FSM instead of original
 from controllers.scripted_fsm_controller import setup_so101_controller, fsm_step, PHASES
 
 
@@ -63,8 +57,6 @@ class CollectConfig:
     spawn_xy_margin: float = 0.0
     spawn_fallback_min_dist: float = 0.1
     headless: bool = False
-    
-    # NEW: Mink-specific configuration
     ee_site_name: str = 'gripperframe'  # End-effector site name in XML
     arm_joint_names: list = None  # Will be set based on robot profile
 
@@ -122,8 +114,6 @@ def parse_args():
     parser.add_argument("--spawn-min-dist", type=float, default=merged_defaults["spawn_min_dist"])
     parser.add_argument("--spawn-xy-margin", type=float, default=merged_defaults["spawn_xy_margin"])
     parser.add_argument("--spawn-fallback-min-dist", type=float, default=merged_defaults["spawn_fallback_min_dist"])
-    
-    # NEW: Mink-specific arguments
     parser.add_argument("--ee-site-name", default=merged_defaults["ee_site_name"])
     parser.add_argument("--arm-joint-names", nargs='+', default=None)
     parser.add_argument(
@@ -163,7 +153,6 @@ def parse_args():
         spawn_xy_margin=args.spawn_xy_margin,
         spawn_fallback_min_dist=args.spawn_fallback_min_dist,
         headless=args.headless,
-        # NEW: Mink-specific
         ee_site_name=args.ee_site_name,
         arm_joint_names=args.arm_joint_names,
     )
@@ -324,12 +313,26 @@ def create_or_load_dataset(config):
     action_dim = 7 if config.env_robot_profile == 'omy' else 6
 
     def has_minimal_local_meta(root_path: Path) -> bool:
-        required_files = [
-            root_path / 'meta' / 'info.json',
-            root_path / 'meta' / 'tasks.jsonl',
-            root_path / 'meta' / 'episodes.jsonl',
+        info_path = root_path / "meta" / "info.json"
+        if not info_path.is_file():
+            return False
+        try:
+            with info_path.open("r", encoding="utf-8") as f:
+                ver = json.load(f).get("codebase_version", "")
+        except (OSError, json.JSONDecodeError):
+            return False
+        if ver == "v3.0":
+            if not (root_path / "meta" / "tasks.parquet").is_file():
+                return False
+            episodes_root = root_path / "meta" / "episodes"
+            if not episodes_root.is_dir():
+                return False
+            return any(episodes_root.rglob("*.parquet"))
+        legacy = [
+            root_path / "meta" / "tasks.jsonl",
+            root_path / "meta" / "episodes.jsonl",
         ]
-        return all(path.exists() for path in required_files)
+        return all(p.is_file() for p in legacy)
 
     create_new = True
     root_path = Path(config.root)
@@ -483,7 +486,6 @@ def collect_demonstrations(env, dataset, config):
     num_success = 0
     num_failed = 0
 
-    # CHANGED: Initialize FSM with mink solver
     # Set default joint names for SO101 if not provided
     if config.arm_joint_names is None:
         # SO-101 arm joint names (matches y_env.py robot_profile='so101')
@@ -526,8 +528,7 @@ def collect_demonstrations(env, dataset, config):
                 record_flag = True
                 frames_in_episode = 0
                 success_streak = 0
-                
-                # CHANGED: Re-initialize FSM after reset
+
                 fsm = setup_so101_controller(
                     env=env,
                     arm_joint_names=arm_joint_names,
@@ -536,14 +537,11 @@ def collect_demonstrations(env, dataset, config):
 
             prev_phase = fsm["phase"]
 
-            # CHANGED: fsm_step now only needs env, fsm, and helper functions
-            # Removed ik_fn and fallback_ik_fn arguments
             action = fsm_step(
                 env=env,
                 fsm=fsm,
                 get_ee_xyz_fn=_get_ee_xyz,
                 cube_pos_fn=get_green_cube_location,
-                # ik_fn and fallback_ik_fn no longer needed - mink handles internally
             )
 
             if fsm["phase"] != prev_phase:
@@ -560,7 +558,6 @@ def collect_demonstrations(env, dataset, config):
                 frames_in_episode = 0
                 success_streak = 0
 
-                # CHANGED: Re-initialize FSM after reset
                 fsm = setup_so101_controller(
                     env=env,
                     arm_joint_names=arm_joint_names,
@@ -580,17 +577,9 @@ def collect_demonstrations(env, dataset, config):
             agent_image, wrist_image = resize_images(agent_image, wrist_image, config.image_size)
 
             if record_flag:
-                # LeRobotDataset writes images to:
-                #   images/<feature_name>/episode_XXXXXX/frame_YYYYYY.png
-                # In headless mode the simulation loop can run fast enough that the
-                # image writer process attempts to write before the per-episode
-                # directory exists. Create it explicitly on first frame.
-                if frames_in_episode == 0:
-                    episode_dir = f"episode_{episode_id + 1:06d}"
-                    images_root = dataset.root / "images"
-                    for feature_name in ["observation.image", "observation.wrist_image"]:
-                        os.makedirs(images_root / feature_name / episode_dir, exist_ok=True)
-
+                # LeRobot 0.5+ writes frame PNGs under
+                #   images/{feature}/episode-{episode_index:06d}/frame-{frame_index:06d}.png
+                # DatasetWriter creates the directory on the first frame of each episode.
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
@@ -599,8 +588,8 @@ def collect_demonstrations(env, dataset, config):
                         "action": joint_q,
                         "obj_init": env.obj_init_pose,
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
+                        "task": config.task_name,
                     },
-                    task=config.task_name,
                 )
                 frames_in_episode += 1
 
@@ -639,11 +628,6 @@ def main():
         env.env.viewer.cam.elevation = -30
 
     dataset = create_or_load_dataset(config)
-
-    # Ensure base image feature directories exist before any PNG writes.
-    images_root = dataset.root / 'images'
-    for feature_name in ['observation.image', 'observation.wrist_image']:
-        os.makedirs(images_root / feature_name, exist_ok=True)
 
     try:
         collect_demonstrations(env, dataset, config)

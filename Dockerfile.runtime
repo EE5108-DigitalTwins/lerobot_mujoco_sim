@@ -61,32 +61,23 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN python -m venv "$VIRTUAL_ENV" && \
     "$VIRTUAL_ENV/bin/python" -m pip install --upgrade pip setuptools wheel
 
-# PyTorch CPU (inference)
+# PyTorch CPU (inference). LeRobot 0.5.x requires torch>=2.7.
 RUN python -m pip install --no-cache-dir \
-    torch==2.6.0 \
-    torchvision==0.21.0 \
+    torch==2.7.0 \
+    torchvision==0.22.0 \
     --index-url https://download.pytorch.org/whl/cpu
 
-# Core runtime deps for MuJoCo + LeRobot dataset IO + inference
+# Core runtime deps for MuJoCo + local helpers; LeRobot pulls dataset/video deps (v3.0 format).
 RUN python -m pip install --no-cache-dir \
     mujoco==3.1.6 \
     numpy \
     Pillow \
-    opencv-python \
     glfw \
     termcolor \
-    pyarrow \
     PyYAML \
-    mink \
-    safetensors==0.5.3 \
-    datasets==3.4.1 \
-    transformers==4.50.3
+    mink
 
-# LeRobot from main (matches Dockerfile for consistency)
-RUN python -m pip install --no-cache-dir \
-  # Pin to a commit compatible with this repo's `lerobot.common.*` imports.
-  --ignore-installed \
-  "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+RUN python -m pip install --no-cache-dir "lerobot==0.5.1"
 
 # Remove build dependencies to keep runtime image smaller.
 RUN apt-get update && apt-get purge -y --auto-remove \

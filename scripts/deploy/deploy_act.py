@@ -24,9 +24,9 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
-from lerobot.common.policies.act.configuration_act import ACTConfig
-from lerobot.common.policies.act.modeling_act import ACTPolicy
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from mujoco_env.y_env import SimpleEnv
 from huggingface_hub import hf_hub_download

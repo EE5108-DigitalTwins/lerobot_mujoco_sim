@@ -22,20 +22,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
+import json
 import numpy as np
 import os
-from pathlib import Path
 from PIL import Image
 import shutil
 from dataclasses import dataclass
 import yaml
 from mujoco_env.y_env import SimpleEnv
-try:
-    # LeRobot >= 0.7.x
-    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-except ImportError:
-    # Backward compatibility for older LeRobot layouts
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 @dataclass
 class CollectConfig:
@@ -263,12 +258,26 @@ def create_or_load_dataset(config):
     action_dim = 7 if config.env_robot_profile == 'omy' else 6
 
     def has_minimal_local_meta(root_path: Path) -> bool:
-        required_files = [
-            root_path / 'meta' / 'info.json',
-            root_path / 'meta' / 'tasks.jsonl',
-            root_path / 'meta' / 'episodes.jsonl',
+        info_path = root_path / "meta" / "info.json"
+        if not info_path.is_file():
+            return False
+        try:
+            with info_path.open("r", encoding="utf-8") as f:
+                ver = json.load(f).get("codebase_version", "")
+        except (OSError, json.JSONDecodeError):
+            return False
+        if ver == "v3.0":
+            if not (root_path / "meta" / "tasks.parquet").is_file():
+                return False
+            episodes_root = root_path / "meta" / "episodes"
+            if not episodes_root.is_dir():
+                return False
+            return any(episodes_root.rglob("*.parquet"))
+        legacy = [
+            root_path / "meta" / "tasks.jsonl",
+            root_path / "meta" / "episodes.jsonl",
         ]
-        return all(path.exists() for path in required_files)
+        return all(p.is_file() for p in legacy)
 
     create_new = True
     root_path = Path(config.root)
@@ -417,8 +426,8 @@ def collect_demonstrations(env, dataset, config):
                         # Store the initial block spawn configuration so that
                         # replay can reconstruct the exact scene.
                         "spawn.block_xyz": env.spawn_obj_xyzs.astype(np.float32),
+                        "task": config.task_name,
                     },
-                    task=config.task_name,
                 )
                 frames_in_episode += 1
 

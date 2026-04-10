@@ -69,8 +69,8 @@ Install PyTorch CPU wheels (same as runtime profile):
 
 ```bash
 python -m pip install \
-  torch==2.6.0 \
-  torchvision==0.21.0 \
+  torch==2.7.0 \
+  torchvision==0.22.0 \
   --index-url https://download.pytorch.org/whl/cpu
 ```
 
@@ -81,22 +81,16 @@ python -m pip install \
   mujoco==3.1.6 \
   numpy \
   Pillow \
-  opencv-python \
   glfw \
   termcolor \
-  pyarrow \
   PyYAML \
-  mink \
-  safetensors==0.5.3 \
-  datasets==3.4.1 \
-  transformers==4.50.3
+  mink
 ```
 
-Install LeRobot from the pinned commit used by runtime image:
+Install LeRobot (same pin as `Dockerfile.runtime`; dataset format v3.0):
 
 ```bash
-python -m pip install --ignore-installed \
-  "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+python -m pip install "lerobot==0.5.1"
 ```
 
 ## 5) (Optional) Install Hugging Face CLI

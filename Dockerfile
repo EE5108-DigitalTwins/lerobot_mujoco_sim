@@ -55,7 +55,8 @@ WORKDIR /workspace
 
 # Python dependencies (consolidated; no separate requirements.txt)
 RUN python -m ensurepip --upgrade && python -m pip install --upgrade pip setuptools wheel
-RUN python -m pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+# LeRobot 0.5.x requires torch>=2.7 and provides LeRobotDataset v3.0 (codebase_version v3.0).
+RUN python -m pip install --no-cache-dir torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
     --index-url https://download.pytorch.org/whl/cu124
 RUN python -m pip install --no-cache-dir \
     mujoco==3.1.6 \
@@ -64,24 +65,11 @@ RUN python -m pip install --no-cache-dir \
     scipy \
     numpy \
     Pillow \
-    opencv-python \
     glfw \
     termcolor \
-    pyarrow \
     PyYAML \
-    mink \
-    safetensors==0.5.3 \
-    datasets==3.4.1 \
-    transformers==4.50.3
-
-    #RUN pip install --no-cache-dir \
-#    "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
-
-# LeRobot from main (matches Dockerfile.runtime for consistency)
-RUN python -m pip install --no-cache-dir \
-  # Pin to a commit compatible with this repo's `lerobot.common.*` imports.
-  --ignore-installed \
-  "git+https://github.com/huggingface/lerobot.git@10b7b3532543b4adfb65760f02a49b4c537afde7#egg=lerobot"
+    mink
+RUN python -m pip install --no-cache-dir "lerobot==0.5.1"
 
 RUN python -m pip install --no-cache-dir jupyterlab ipykernel ipywidgets
 

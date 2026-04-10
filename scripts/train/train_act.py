@@ -10,12 +10,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.common.datasets.utils import dataset_to_policy_features
-from lerobot.common.policies.act.configuration_act import ACTConfig
-from lerobot.common.policies.act.modeling_act import ACTPolicy
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.feature_utils import dataset_to_policy_features
+from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType
-from lerobot.common.datasets.factory import resolve_delta_timestamps
+from lerobot.datasets.factory import resolve_delta_timestamps
 import torchvision
 import json
 
