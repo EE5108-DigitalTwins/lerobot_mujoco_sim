@@ -46,7 +46,7 @@ class DeployConfig:
     device: str = "auto"
     image_size: int = 256
     spawn_x_min: float = 0.21
-    spawn_x_max: float = 0.27
+    spawn_x_max: float = 0.22
     spawn_y_min: float = 0.04
     spawn_y_max: float = 0.16
     spawn_z_min: float = 0.815
@@ -54,6 +54,8 @@ class DeployConfig:
     spawn_min_dist: float = 0.01
     spawn_xy_margin: float = 0.0
     spawn_fallback_min_dist: float = 0.1
+    num_trials: int = 20
+    trial_timeout_s: float = 60.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +113,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spawn-min-dist", type=float, default=merged_defaults["spawn_min_dist"])
     p.add_argument("--spawn-xy-margin", type=float, default=merged_defaults["spawn_xy_margin"])
     p.add_argument("--spawn-fallback-min-dist", type=float, default=merged_defaults["spawn_fallback_min_dist"])
+    p.add_argument(
+        "--num-trials",
+        type=int,
+        default=merged_defaults["num_trials"],
+        help="Number of evaluation trials to run (0 = run indefinitely).",
+    )
+    p.add_argument(
+        "--trial-timeout-s",
+        type=float,
+        default=merged_defaults["trial_timeout_s"],
+        help="Maximum seconds per trial before it is counted as a timeout/failure.",
+    )
     p.add_argument(
         "--device",
         default=merged_defaults["device"],
@@ -284,38 +298,99 @@ def main() -> None:
 
     img_transform = torchvision.transforms.ToTensor()
 
-    step = 0
-    env.reset(seed=args.seed)
+    import time
+
+    num_trials = args.num_trials          # 0 → run indefinitely
+    timeout_s  = args.trial_timeout_s
+
+    trial_idx      = 0
+    num_success    = 0
+    num_timeout    = 0
+
+    step           = 0
+    trial_start    = time.monotonic()
+
+    env.reset(seed=args.seed + trial_idx)
     policy.reset()
 
+    print(
+        f"[deploy_act] Starting evaluation: {num_trials} trial(s), "
+        f"{timeout_s:.0f}s timeout each. "
+        f"(num_trials=0 → run indefinitely)"
+    )
+
     while env.env.is_viewer_alive():
+        if num_trials > 0 and trial_idx >= num_trials:
+            break
+
         env.step_env()
-        if env.env.loop_every(HZ=args.hz):
-            if bool(env.check_success()):
-                print("[deploy_act] Success — resetting.")
-                policy.reset()
-                env.reset(seed=args.seed)
-                step = 0
+        if not env.env.loop_every(HZ=args.hz):
+            continue
 
-            state = env.get_ee_pose()
-            image, wrist_image = env.grab_image()
+        elapsed = time.monotonic() - trial_start
 
-            image_t = img_transform(Image.fromarray(image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
-            wrist_t = img_transform(Image.fromarray(wrist_image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
+        # ── success ──────────────────────────────────────────────────────────
+        if bool(env.check_success()):
+            num_success += 1
+            print(
+                f"[deploy_act] Trial {trial_idx + 1}/{num_trials or '∞'} — "
+                f"SUCCESS in {elapsed:.1f}s"
+            )
+            trial_idx  += 1
+            step        = 0
+            policy.reset()
+            env.reset(seed=args.seed + trial_idx)
+            trial_start = time.monotonic()
+            continue
 
-            batch = {
-                "observation.state": torch.tensor([state], dtype=torch.float32, device=device),
-                "observation.image": image_t,
-                "observation.wrist_image": wrist_t,
-                "task": [args.task],
-                "timestamp": torch.tensor([step / float(args.hz)], dtype=torch.float32, device=device),
-            }
+        # ── timeout ──────────────────────────────────────────────────────────
+        if elapsed >= timeout_s:
+            num_timeout += 1
+            print(
+                f"[deploy_act] Trial {trial_idx + 1}/{num_trials or '∞'} — "
+                f"TIMEOUT ({timeout_s:.0f}s)"
+            )
+            trial_idx  += 1
+            step        = 0
+            policy.reset()
+            env.reset(seed=args.seed + trial_idx)
+            trial_start = time.monotonic()
+            continue
 
-            action = policy.select_action(batch)[0].detach().cpu().numpy()
-            action = np.asarray(action, dtype=np.float32)
-            _ = env.step(action)
-            env.render()
-            step += 1
+        # ── inference step ───────────────────────────────────────────────────
+        state = env.get_ee_pose()
+        image, wrist_image = env.grab_image()
+
+        image_t = img_transform(Image.fromarray(image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
+        wrist_t = img_transform(Image.fromarray(wrist_image).resize((args.image_size, args.image_size))).unsqueeze(0).to(device)
+
+        batch = {
+            "observation.state": torch.tensor([state], dtype=torch.float32, device=device),
+            "observation.image": image_t,
+            "observation.wrist_image": wrist_t,
+            "task": [args.task],
+            "timestamp": torch.tensor([step / float(args.hz)], dtype=torch.float32, device=device),
+        }
+
+        action = policy.select_action(batch)[0].detach().cpu().numpy()
+        action = np.asarray(action, dtype=np.float32)
+        _ = env.step(action)
+        env.render()
+        step += 1
+
+    # ── final summary ─────────────────────────────────────────────────────────
+    completed = trial_idx
+    if completed > 0:
+        num_fail = completed - num_success - num_timeout
+        pct = 100.0 * num_success / completed
+        print(
+            f"\n[deploy_act] ══ Evaluation complete ══\n"
+            f"  Trials completed : {completed}\n"
+            f"  Successes        : {num_success}\n"
+            f"  Timeouts         : {num_timeout}\n"
+            f"  Other failures   : {num_fail}\n"
+            f"  Success rate     : {num_success}/{completed} = {pct:.1f}%"
+        )
 
 
 if __name__ == "__main__":
